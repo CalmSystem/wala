@@ -1,0 +1,29 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build debug",
+            "type": "shell",
+            "command": "zig build",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Build safe",
+            "type": "shell",
+            "command": "zig build -Drelease-safe",
+            "problemMatcher": [],
+            "group": "build"
+        },
+        {
+            "label": "Build fast",
+            "type": "shell",
+            "command": "zig build -Drelease-fast",
+            "problemMatcher": [],
+            "group": "build"
+        }
+    ]
+}
