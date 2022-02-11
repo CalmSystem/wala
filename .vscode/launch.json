@@ -6,7 +6,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/zig-out/bin/wala",
-            "args": ["samples/fib.wal"],
+            "args": ["run", "samples/fib.wal"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],

@@ -34,12 +34,15 @@ const Value = union(enum) {
     float: f128,
     boolean: bool,
     name: Parser.Name,
+    void: void,
 
     fn eval(v: Value, self: *Self) Error!Value {
         return switch (v) {
             .name => |name| try self.get(name),
             .func => |func| if (func.arg == null)
-                try func.call(self, null) else v,
+                try func.call(self, null)
+            else
+                v,
             else => v,
         };
     }
@@ -55,8 +58,8 @@ const Self = @This();
 scope: Scope,
 parent: ?*Self,
 
-pub inline fn init(allocator: std.mem.Allocator) Self {
-    return Self{ .scope = Scope.init(allocator), .parent = null };
+pub inline fn init(gpa: std.mem.Allocator) Self {
+    return Self{ .scope = Scope.init(gpa), .parent = null };
 }
 pub inline fn deinit(self: Self) void {
     self.scope.deinit();
@@ -96,13 +99,14 @@ pub fn runLog(self: *Self, file: Reader.Parsed, comptime Writer: type, writer: W
     const Adaptor = struct {
         writer: Writer,
         fn out(adaptor: @This(), value: Value) !void {
-            const w =  adaptor.writer;
+            const w = adaptor.writer;
             try switch (value) {
-                Value.int => |int| w.print("{}", .{int}),
-                Value.float => |float| w.print("{}", .{float}),
-                Value.boolean => |boolean| w.print("{}", .{boolean}),
-                Value.name => |name| w.print("\"{s}\"n.", .{name}),
-                Value.func => |func| w.print("{s} -> @{}", .{ func.arg, func.body[0].at.offset }),
+                .int => |int| w.print("{}", .{int}),
+                .float => |float| w.print("{}", .{float}),
+                .boolean => |boolean| w.print("{}", .{boolean}),
+                .name => |name| w.print("\"{s}\"n.", .{name}),
+                .func => |func| w.print("{s} -> @{}", .{ func.arg, func.body[0].at.offset }),
+                .void => w.print(".", .{}),
             };
             try w.writeAll("\n");
         }
@@ -110,13 +114,23 @@ pub fn runLog(self: *Self, file: Reader.Parsed, comptime Writer: type, writer: W
     try self.runOut(file, Adaptor, Adaptor{ .writer = writer });
 }
 
-const Error = error{ MissingMethod, UnhandledNodeKind, TypeMismatch, UnknownVariable } || std.mem.Allocator.Error;
+const Error = error{
+    /// Calling undefined method
+    MissingMethod,
+    /// Calling undefined variable
+    UnknownVariable,
+    UnhandledNodeKind,
+    /// Cannot print
+    PrintFailed,
+} || std.mem.Allocator.Error;
 fn eval(self: *Self, node: Parser.Node) Error!Value {
     return switch (node.value) {
         .name => |name| Value{ .name = name },
         .integer => |int| Value{ .int = int },
         .decimal => |float| Value{ .float = float },
         .tuple => |tuple| {
+            if (tuple.len == 0)
+                return Value{ .void = .{} };
             std.debug.assert(tuple.len == 1);
             return self.eval(tuple[0]);
         },
@@ -129,9 +143,17 @@ fn eval(self: *Self, node: Parser.Node) Error!Value {
     };
 }
 
+fn print(value: anytype) Error!void {
+    const format = if (@TypeOf(value) == []const u8) "{s}\n" else "{}\n";
+    std.io.getStdOut().writer().print(format, .{value}) catch return Error.PrintFailed;
+}
 fn call(self: *Self, on: Value, arg: Value, do: Parser.Name) Error!Value {
     return switch (on) {
-        Value.int => |int| {
+        .int => |int| {
+            if (strEql(Context.PRINT, do)) {
+                try print(int);
+                return on;
+            }
             std.debug.assert(do.len == 1);
             return switch (do[0]) {
                 '+' => Value{ .int = int + arg.int },
@@ -146,7 +168,11 @@ fn call(self: *Self, on: Value, arg: Value, do: Parser.Name) Error!Value {
                 },
             };
         },
-        Value.float => |float| {
+        .float => |float| {
+            if (strEql(Context.PRINT, do)) {
+                try print(float);
+                return on;
+            }
             std.debug.assert(do.len == 1);
             return Value{ .float = switch (do[0]) {
                 '+' => float + arg.float,
@@ -158,7 +184,11 @@ fn call(self: *Self, on: Value, arg: Value, do: Parser.Name) Error!Value {
                 },
             } };
         },
-        Value.boolean => |b| {
+        .boolean => |b| {
+            if (strEql(Context.PRINT, do)) {
+                try print(b);
+                return on;
+            }
             std.debug.assert(do.len == 1);
             return switch (do[0]) {
                 '?' => if (b) arg.eval(self) else Value{ .boolean = false },
@@ -169,8 +199,11 @@ fn call(self: *Self, on: Value, arg: Value, do: Parser.Name) Error!Value {
                 },
             };
         },
-        Value.name => |name| {
-            if (strEql(Context.ASSIGN, do)) {
+        .name => |name| {
+            if (strEql(Context.PRINT, do)) {
+                try print(name);
+                return on;
+            } else if (strEql(Context.ASSIGN, do)) {
                 try self.set(name, arg);
                 return arg;
             } else if (strEql(Context.CALL, do)) {

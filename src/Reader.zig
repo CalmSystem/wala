@@ -13,17 +13,14 @@ pub fn deinit(self: *FileReader) void {
 }
 
 pub fn read(self: *FileReader, path: []const u8) !File {
-    return self.read2(path, std.heap.page_allocator);
-}
-pub fn read2(self: *FileReader, path: []const u8, tmp_allocator: std.mem.Allocator) !File {
     const realpath = try std.fs.realpathAlloc(self.normalizer.arena.allocator(), path);
 
     const file = try std.fs.openFileAbsolute(realpath, .{ .read = true });
     defer file.close();
 
     const file_size = try file.getEndPos();
-    const file_buffer = try file.readToEndAlloc(tmp_allocator, file_size);
-    defer tmp_allocator.destroy(file_buffer.ptr);
+    const file_buffer = try file.readToEndAlloc(self.normalizer.allocator, file_size);
+    defer self.normalizer.allocator.destroy(file_buffer.ptr);
     _ = try file.read(file_buffer);
 
     return self.load(realpath, file_buffer);
@@ -53,7 +50,7 @@ pub fn tryParse(self: *FileReader, path: []const u8) ParseResult {
         }
         return ParseResult{ .err = ParseResult.Err{ .kind = err, .at = point } };
     };
-    return switch (file.tryParse(self.normalizer.allocator)) {
+    return switch (file.tryParse(self.normalizer.arena.allocator())) {
         .ok => |ok| ParseResult{ .ok = Parsed{ .file = file, .tree = ok } },
         .err => |err| ParseResult{ .err = ParseResult.Err{ .kind = err.kind, .at = file.linePoint(err.offset) } },
     };
