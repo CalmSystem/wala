@@ -1,6 +1,7 @@
 const std = @import("std");
 const Reader = @import("Reader.zig");
 const Runner = @import("Runner.zig");
+const Wasm = @import("Wasm.zig");
 const args = @import("args");
 
 const TopOptions = struct {
@@ -139,5 +140,38 @@ inline fn build(_: BuildOptions, positionals: Positionals, help: bool) !void {
     if (help) build_usage(false);
     if (positionals.len != 0) build_usage(true);
 
-    @panic("TODO: build");
+    var s = Wasm.init(std.heap.page_allocator);
+    defer s.deinit();
+
+    const fd_write_type = Wasm.FuncType{ .params = Wasm.i32Valtypes(4), .returns = Wasm.i32Valtypes(1) };
+    const fd_write_idx = try s.addFuncImport("wasi_snapshot_preview1", "fd_write", fd_write_type);
+
+    const _start_type = Wasm.FuncType{ .params = Wasm.i32Valtypes(0), .returns = Wasm.i32Valtypes(0) };
+    const _start_idx = try s.addFunc(_start_type, .{});
+    try s.addExport("_start", .{ .function = _start_idx });
+
+    _ = s.addDataZeros(8);
+    const _start_data = "Hello from WASM-WASI\n";
+    const _start_data_offset = try s.addData(_start_data, false);
+    std.debug.assert(_start_data_offset == 8);
+    try s.exportMemory();
+
+    var c = try s.codeWriter(0, Wasm.emptyValtypes);
+    defer c.deinit();
+    try c.i32_(40);
+    try c.i32_(8);
+    try c.i32_store(.{});
+    try c.i32_(40);
+    try c.i32_(21);
+    try c.i32_store(.{ .offset = 4 });
+    try c.i32_(1);
+    try c.i32_(40);
+    try c.i32_(1);
+    try c.i32_(0);
+    try c.call(fd_write_idx);
+    try c.drop();
+    s.defineFunc(_start_idx, try s.allocBytes(try c.finish()));
+
+    const stdout = std.io.getStdOut().writer();
+    try s.emit(@TypeOf(stdout), stdout);
 }
