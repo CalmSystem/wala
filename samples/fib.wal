@@ -1,5 +1,5 @@
-fib =: (x) ->
-    x < 3 ? x :
-        fib. (x - 1) +: fib. (x - 2)
-
-fib. 20 print.
+func $fib export()
+  u64 $n
+  if {$n <= 1}
+    1
+    {$fib{$n - 2} + $fib{$n - 1}}

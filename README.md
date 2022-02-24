@@ -1,55 +1,32 @@
 # Wala
 
-A toy programming language mixing many inspirations *(mainly Zig, Python and F#)*.
+A language trying to simplify [WebAssembly Text](https://developer.mozilla.org/en-US/docs/WebAssembly/Understanding_the_text_format) syntax while keeping the full expressiveness and retro-compatibility. Mixing many inspirations *(mainly Python and Racket)*.
 
-Pronounced `\vwa.la\` as in french voila *(meaning here it is)*. The exact acronym's composition is unspecified but can be interpreted as [WebAssembly](https://webassembly.org/) Language Adapter or What Another Linguistic Anomaly.
-
-```
-fib =: (x) ->
-    x < 3 ? x :
-        fib. (x - 1) +: fib. (x - 2)
-
-fib. 20
-```
+Pronounced `\vwa.la\` as in french voila *(meaning here it is)*. The exact acronym's composition is unspecified but can be interpreted as [WebAssembly](https://webassembly.org/) Language Adaptor or What Another Linguistic Anomaly.
 
 ## Philosophy 
 
-Wala tries to simply Object Oriented Programming syntax
+It is implemented as a set of complementary extensions over standard [WebAssembly Text Format](https://webassembly.github.io/spec/core/text/index.html)
 
-Get bob's student number and display it:
-- Python: `print(students.get("bob").id)`
-- Wala: `students get "bob" .id print.`
+```wal
+func $fib (export)
+  u64 $n
+  if {$n <= 1}
+    1
+    {$fib{$n - 2} + $fib{$n - 1}}
 
-
-It helps functional composition with left to right evaluation and [pipeline operator](https://bradcollins.com/2015/04/03/f-friday-pipeline-operators/).
-
-Display Top 3 students ratings means:
-- Python
-```python
-ratings = (value for student in students
-  for name, value in student.ratings)
-grades = (sum(rating)/len(rating) for rating in ratings)
-print(sorted(list(grades), revert=True)[:3])
-```
-- Wala
-```
-students map
-  |> .ratings mean: (r) -> r .value
-|> sorted true take 3
-|> print.
 ```
 
-## Features
-
-* Basic parser
-* Basic interpreter
-
-### Planned
-
-* WASM Codegen
-* LLVM Codegen
-* OOP
-* Iterators
+Is expended to:
+```wat
+(module
+  (func $fib (export "fib") (param $n i64) (result i64)
+    (if (result i64) (i64.le_u (local.get $n) (i64.const 1))
+      (i64.const 1)
+      (i64.add
+        (call $fib (i64.sub (local.get $n) (i64.const 2)))
+        (call $fib (i64.sub (local.get $n) (i64.const 1)))))))
+```
 
 ## Install
 
@@ -57,6 +34,11 @@ students map
 
 - [Zig](https://ziglang.org/learn/getting-started)
 - [Zigmod](https://nektro.github.io/zigmod/)
+
+#### Optional
+
+- [Binaryen](https://github.com/WebAssembly/binaryen) for additional optimizations
+- [Wasmtime](https://github.com/bytecodealliance/wasmtime) for WASI runtime
 
 ### Building
 
@@ -70,10 +52,66 @@ PATH=$PATH:./zig-out/bin
 
 ## Usage
 
-* Evaluate `samples/fib.wal`
+* Convert `test/fib.wala` to Wat
 ```sh
-wala run samples/fib.wal
+wala build samples/fib.wala
 ```
+
+## Features
+
+### Sweet expression
+
+Deducing parentheses from indentation based on [Readable Lisp S-expressions Project](https://readable.sourceforge.io/)'s [Spir110](https://srfi.schemers.org/srfi-110/srfi-110.html)
+
+#### Curly infix expressions
+
+- `{"hello" upper}` -> `(upper "hello)`
+- `{a + b}` -> `(+ a b)`
+- `{a * b * c}` -> `(* a b c)`
+- `{$fn call a b c}` -> `(call $fb a b c}`
+
+#### Neoteric expression
+
+Like function calls
+
+- `cos(v)` -> `(cos v)`
+- `e()` -> `(e)`
+- `sum(a b c)` -> `(sum a b c)`
+- `f{n + 1}` -> `(f (+ n 1))`
+
+### Planned
+
+### Short const and vars
+
+- `42i32` -> `(i32.const 42)`
+- `1.3f64` -> `(f64.const 1.3)`
+- `$var@l` -> `(local.get $var)`
+- `$log@g` -> `(global.get $log)`
+
+#### Common Operations
+
+- `(i32.+ a b)` -> `(i32.add a b)`
+
+#### Result Type Deduction
+
+No need to specify blocks and function result types
+
+#### Operation Type Deduction
+
+- `(add (i32.const 35) 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
+
+#### Name expansion
+
+- `($func $param $global)` -> `(call $func (local.get $param) (global.get $global)`
+
+#### Interface integration
+
+Allows to define, import and use `wit` declarations. See [fib.wasi.wal](./test/wala/fib.wasi.wal)
+
+#### Tagged types
+
+- `{42s64 <= 1}` `i64@s` -> `(i64.le_s (i64.const 42) (i64.const 1))`
+- `{42u64 <= 1}` `i64@u` -> `(i64.le_u (i64.const 42) (i64.const 1))`
 
 ## License
 

@@ -1,1 +1,13 @@
-hello print.
+use($wasi "wasi_unstable")
+
+data(16 "Hello, W0rld!\n")
+
+func $main export()
+  store 8 16u32
+  store offset=4 8 14u32
+  call $wasi:fd_write
+    1 ;; fd: stdout
+    8 ;; const ciovec*
+    1 ;; len of ciovec
+    4 ;; written*
+  drop

@@ -1,0 +1,5 @@
+use "std"
+use "./fib.wal"
+
+func export("_start")
+  $print($fib(42))
