@@ -12,6 +12,7 @@ const TopOptions = struct {
     };
 };
 const Command = union(enum) {
+    run: RunOptions,
     build: BuildOptions,
     parse: ParseOptions,
     help: struct {},
@@ -24,7 +25,8 @@ fn top_usage(fatal: bool) noreturn {
         \\Usage: wala <command> [options]
         \\
         \\Commands:
-        \\  build   Compile Wala to Wat
+        \\  run     Run built wasm with system runtime
+        \\  build   Convert Wala to WebAssembly
         \\  parse   Read sweet expressions
         \\  help    Print this usage information
         \\
@@ -32,12 +34,12 @@ fn top_usage(fatal: bool) noreturn {
         \\  -h, --help    Print command-specific usage
         \\
         \\Examples:
-        \\  wala build samples/hello.wala
+        \\  wala run samples/hello.wala
         \\
     });
     std.os.exit(@boolToInt(fatal));
 }
-fn fatalErr(err: anyerror) noreturn {
+fn fatalErr(err: anytype) noreturn {
     errPrint("{}\n", .{ err });
     std.os.exit(1);
 }
@@ -53,6 +55,7 @@ pub fn main() !void {
     const command = argv.verb orelse top_usage(!help);
 
     switch (command) {
+        .run => |options| try run(options, argv.positionals, help),
         .build => |options| try build(options, argv.positionals, help),
         .parse => |options| try parse(options, argv.positionals, help),
         .help => top_usage(false),
@@ -92,10 +95,7 @@ inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) !vo
                 writer.writeByte('\n') catch unreachable;
             }
         },
-        .err => |err| {
-            err.print(file);
-            std.os.exit(1);
-        }
+        .err => |err| fatalErr(err)
     }
 }
 
@@ -135,9 +135,62 @@ inline fn build(options: BuildOptions, positionals: Positionals, help: bool) !vo
                 .human => writer.print("{human}\n", .{ module }) catch unreachable,
             }
         },
-        .err => |err| {
-            err.print(file);
-            std.os.exit(1);
-        }
+        .err => |err| fatalErr(err)
+    }
+}
+
+const RunOptions = struct {
+    runtime: []const u8 = "wasmtime",
+    builder: []const u8 = "wat2wasm", // TODO: replace with BuildFormat.binary
+};
+fn run_usage(fatal: bool) noreturn {
+    errPrint("{s}", .{
+        \\Usage: wala run <file> [options]
+        \\
+        \\Options:
+        \\  --runtime     Execution environment with arguments
+        \\  -h, --help    Print this usage information
+        \\
+        \\Examples:
+        \\  wala run samples/hello.wala
+        \\
+    });
+    std.os.exit(@boolToInt(fatal));
+}
+inline fn run(options: RunOptions, positionals: Positionals, help: bool) !void {
+    if (help) run_usage(false);
+    if (positionals.len != 1) {
+        errPrint("Expect 1 argument got {}\n", .{positionals.len});
+        run_usage(true);
+    }
+
+    var file = File.init(positionals[0], top_alloc) catch |err| fatalErr(err);
+    switch (file.tryRead()) {
+        .ok => |exprs| {
+            const module = try Module.compile(exprs, file.arena.allocator());
+
+            var tmpDir = std.testing.tmpDir(.{});
+            defer tmpDir.cleanup();
+
+            const watName = "run.wat";
+            const wasmName = "run.wasm";
+
+            const watFile = tmpDir.dir.createFile(watName, .{}) catch unreachable;
+            module.print(.compact, watFile.writer()) catch unreachable;
+            watFile.close();
+            
+            // TODO: check Term
+            _ = try std.ChildProcess.exec(.{
+                .allocator = top_alloc,
+                .argv = &[_][]const u8 {options.builder, watName, "-o", wasmName},
+                .cwd_dir = tmpDir.dir
+            });
+
+            const runtime = std.ChildProcess.init(&[_][]const u8 {options.runtime, wasmName}, top_alloc) catch unreachable;
+            defer runtime.deinit();
+            runtime.cwd_dir = tmpDir.dir;
+            _ = try runtime.spawnAndWait();
+        },
+        .err => |err| fatalErr(err)
     }
 }

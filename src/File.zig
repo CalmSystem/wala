@@ -44,10 +44,16 @@ pub fn read(self: *File) ![]Expr {
 pub const ReadErr = struct {
     kind: anyerror,
     at: usize,
+    file: *const File,
 
-    pub fn print(self: ReadErr, file: File) void {
-        const point = file.linePoint(self.at);
-        std.debug.print("{/}{}\n{^}", .{ point, self.kind, point });
+    pub fn format(
+        self: ReadErr,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        const point = self.file.linePoint(self.at);
+        try writer.print("{/}{}\n{^}", .{ point, self.kind, point });
     }
 };
 pub const ReadResult = union(enum) {
@@ -57,13 +63,13 @@ pub const ReadResult = union(enum) {
 pub fn tryReadS(self: *File) ReadResult {
     var iter = TextIterator.init(self.text);
     const exprs = SParser.parseAll(&iter, self.arena.allocator())
-        catch |err| return .{ .err = .{ .kind = err, .at = iter.peek().offset } };
+        catch |err| return .{ .err = .{ .kind = err, .at = iter.peek().offset, .file = self } };
     return .{ .ok = exprs };
 }
 pub fn tryRead(self: *File) ReadResult {
     var iter = TextIterator.init(self.text);
     const exprs = SweetParser.parseAll(&iter, self.arena.allocator())
-        catch |err| return .{ .err = .{ .kind = err, .at = iter.peek().offset } };
+        catch |err| return .{ .err = .{ .kind = err, .at = iter.peek().offset, .file = self } };
     return .{ .ok = exprs };
 }
 
@@ -122,7 +128,7 @@ pub const LinePoint = struct {
             while (i < self.at.column) : (i += 1) {
                 try writer.writeByte(options.fill);
             }
-            try writer.writeAll("^\n");
+            try writer.writeAll("^");
         }
     }
 };

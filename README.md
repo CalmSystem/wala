@@ -52,6 +52,10 @@ PATH=$PATH:./zig-out/bin
 
 ## Usage
 
+* Run built module *(requires `wat2wasm` and `wasmtime`)*
+```sh
+wala run samples/hello.wala
+```
 * Convert `test/fib.wala` to Wat
 ```sh
 wala build samples/fib.wala
