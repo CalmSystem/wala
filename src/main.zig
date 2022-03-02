@@ -2,7 +2,7 @@ const std = @import("std");
 const args = @import("args");
 const Expr = @import("Expr.zig");
 const File = @import("File.zig");
-const Module = @import("Module.zig");
+
 
 const TopOptions = struct {
     help: bool = false,
@@ -86,8 +86,10 @@ inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) !vo
         parse_usage(true);
     }
 
-    var file = File.init(positionals[0], top_alloc) catch |err| fatalErr(err);
-    switch (file.tryRead()) {
+    var file = File.read(positionals[0], top_alloc) catch |err| fatalErr(err);
+    defer file.deinit();
+
+    switch (file.text.tryRead()) {
         .ok => |exprs| {
             const writer = std.io.getStdOut().writer();
             for (exprs) |expr| {
@@ -124,16 +126,19 @@ inline fn build(options: BuildOptions, positionals: Positionals, help: bool) !vo
         build_usage(true);
     }
 
-    var file = File.init(positionals[0], top_alloc) catch |err| fatalErr(err);
-    switch (file.tryRead()) {
+    var file = File.read(positionals[0], top_alloc) catch |err| fatalErr(err);
+    defer file.deinit();
+
+    switch (file.text.tryRead()) {
         .ok => |exprs| {
-            const module = try Module.compile(exprs, file.arena.allocator());
+            const wat = exprs; //TODO: load and check
 
             const writer = std.io.getStdOut().writer();
-            switch (options.format) {
-                .compact => writer.print("{compact}\n", .{ module }) catch unreachable,
-                .human => writer.print("{human}\n", .{ module }) catch unreachable,
-            }
+            wat.print(switch (options.format) {
+                .compact => .compact,
+                .human => .human,
+            }, writer) catch unreachable;
+            writer.writeByte('\n') catch unreachable;
         },
         .err => |err| fatalErr(err)
     }
@@ -164,10 +169,13 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) !void {
         run_usage(true);
     }
 
-    var file = File.init(positionals[0], top_alloc) catch |err| fatalErr(err);
-    switch (file.tryRead()) {
+    var file = File.read(positionals[0], top_alloc) catch |err| fatalErr(err);
+    defer file.deinit();
+
+    //TODO: if wasm
+    switch (file.text.tryRead()) {
         .ok => |exprs| {
-            const module = try Module.compile(exprs, file.arena.allocator());
+            const wat = exprs;
 
             var tmpDir = std.testing.tmpDir(.{});
             defer tmpDir.cleanup();
@@ -176,7 +184,7 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) !void {
             const wasmName = "run.wasm";
 
             const watFile = tmpDir.dir.createFile(watName, .{}) catch unreachable;
-            module.print(.compact, watFile.writer()) catch unreachable;
+            wat.print(.compact, watFile.writer()) catch unreachable;
             watFile.close();
             
             // TODO: check Term

@@ -1,3 +1,4 @@
+const u = @import("util.zig");
 const std = @import("std");
 
 const Expr = @This();
@@ -9,7 +10,7 @@ const Range = struct {
     offset: usize,
     len: usize,
 
-    pub fn view(r: Range, bytes: []const u8) []const u8 {
+    pub fn view(r: Range, bytes: u.Bin) u.Bin {
         return bytes[r.offset..r.end()];
     }
     pub fn end(r: Range) usize {
@@ -30,22 +31,60 @@ pub const Format = enum {
 
 pub const Val = union(enum) {
     list: []Expr,
-    name: []const u8,
-    str: []const u8,
-    ident: []const u8,
+    name: u.Txt,
+    str: u.Txt,
+    ident: u.Txt,
 
-    fn text(self: Val) ?[]const u8 {
+    fn deinit(self: Val, allocator: std.mem.Allocator) void {
+        switch(self) {
+            .list => |exprs| {
+                for(exprs) |expr|
+                    expr.deinit(allocator);
+                allocator.free(exprs);
+            },
+            else => {}
+        }
+    }
+
+    fn asText(self: Val) ?u.Txt {
         return switch(self) {
             .name,.str,.ident => |str| str,
             else => null
         };
     }
 
-    pub fn shallow_eql(self: Val, other: Val) bool {
+    const Func = struct {
+        name: u.Txt,
+        args: []Expr,
+    };
+    pub fn asFunc(self: Val) ?Func {
+        switch(self) {
+            .list => |exprs| {
+                if (exprs.len > 0) if(exprs[0].val.asName()) |name|
+                    return Func{ .name = name, .args = exprs[1..] };
+            },
+            else => {}
+        }
+        return null;
+    }
+
+    inline fn asName(self: Val) ?u.Txt {
+        return switch(self) {
+            .name => |name| name,
+            else => null
+        };
+    }
+    pub inline fn asIdent(self: Val) ?u.Txt {
+        return switch(self) {
+            .ident => |ident| ident,
+            else => null
+        };
+    }
+
+    pub fn shallowEql(self: Val, other: Val) bool {
         if (@enumToInt(self) != @enumToInt(other)) return false;
-        return if (self.text()) |str|
-            std.mem.eql(u8, str, other.text().?)
-            else false;
+        const str = self.asText() orelse return false;
+        return u.strEql(str, other.asText().?);
     }
 
     pub fn format(
@@ -81,7 +120,7 @@ pub const Val = union(enum) {
                             try list[0].val.print(fmt, writer, depth);
                         var i: usize = 1;
                         while (i < list.len): (i += 1) {
-                            if (fmt != .tree and list[i-1].val.text() != null and list[i].val.text() != null) {
+                            if (fmt != .tree and list[i-1].val.asText() != null and list[i].val.asText() != null) {
                                 try writer.writeByte(' ');
                             } else {
                                 try writer.writeByte('\n');

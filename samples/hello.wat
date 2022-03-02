@@ -8,8 +8,7 @@
 comment
 
   ;)
-  (memory 1)
-  (export "memory" (memory 0))
+  (memory (export "memory") 1)
 
   (data (i32.const 16) "Hello, W0rld!\n")
 

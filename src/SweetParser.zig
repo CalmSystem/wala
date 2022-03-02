@@ -3,6 +3,11 @@ const SParser = @import("SParser.zig");
 const Expr = SParser.Expr;
 const TextIterator = SParser.TextIterator;
 
+pub const Error = error {
+    TopLevelIndent,
+    IndentMismatch,
+} || SParser.Error;
+
 pub fn parseAll(iter: *TextIterator, alloc: std.mem.Allocator) ![]Expr {
     var exprs = std.ArrayList(Expr).init(alloc);
     while (!iter.eof()) {

@@ -165,7 +165,7 @@ inline fn transformInfix(list: *std.ArrayList(Expr)) void {
     const op = es[0];
     var i: usize = 3;
     while (i < es.len): (i += 2) {
-        if (!op.val.shallow_eql(es[i].val)) return;
+        if (!op.val.shallowEql(es[i].val)) return;
     }
 
     i = 3;

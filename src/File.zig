@@ -1,50 +1,103 @@
+const u = @import("util.zig");
 const std = @import("std");
 const SParser = @import("SParser.zig");
 const SweetParser = @import("SweetParser.zig");
 const Expr = SParser.Expr;
 const TextIterator = SParser.TextIterator;
 
-const File = @This();
+pub const Type = enum { wasm, text };
 
-realpath: []const u8,
-text: []const u8,
-arena: std.heap.ArenaAllocator,
+pub const Any = union(Type) {
+    wasm: Wasm,
+    text: Text,
 
-pub fn init(path: []const u8, child_allocator: std.mem.Allocator) !File {
-    var arena = std.heap.ArenaAllocator.init(child_allocator);
-    return load(path, &arena);
-}
-pub fn load(path: []const u8, arena: *std.heap.ArenaAllocator) !File {
-    const allocator = arena.allocator();
+    pub fn read(path: u.Txt, allocator: std.mem.Allocator) !Any {
+        const safepath = try std.fs.realpathAlloc(allocator, path);
 
-    const realpath = try std.fs.realpathAlloc(allocator, path);
+        const file = try std.fs.openFileAbsolute(safepath, .{ .read = true });
+        defer file.close();
 
-    const file = try std.fs.openFileAbsolute(realpath, .{ .read = true });
-    defer file.close();
+        const size = try file.getEndPos();
+        const bytes = try file.readToEndAlloc(allocator, size);
+        _ = try file.read(bytes);
 
-    const size = try file.getEndPos();
-    const text = try file.readToEndAlloc(allocator, size);
-    _ = try file.read(text);
+        if (std.mem.startsWith(u8, bytes, &std.wasm.magic))
+            return Any{ .wasm = .{ .realpath = safepath, .bytes = bytes, .allocator = allocator } };
 
-    return File{ .realpath = realpath, .text = text, .arena = arena.* };
-}
-pub fn deinit(self: File) void {
-    self.arena.deinit();
-}
+        return Any{ .text = .{ .realpath = safepath, .text = try u.toTxt(bytes), .allocator = allocator } };
+    }
+    pub fn deinit(self: Any) void {
+        switch(self) {
+            .wasm => |wasm| wasm.deinit(),
+            .text => |text| text.deinit(),
+        }
+    }
 
-pub fn readS(self: *File) ![]Expr {
-    var iter = TextIterator.init(self.text);
-    return SParser.parseAll(&iter, self.arena.allocator());
-}
-pub fn read(self: *File) ![]Expr {
-    var iter = TextIterator.init(self.text);
-    return SweetParser.parseAll(&iter, self.arena.allocator());
-}
+    pub inline fn realpath(self: Any) u.Txt {
+        return switch(self) {
+            .wasm => |wasm| wasm.realpath,
+            .text => |text| text.realpath,
+        };
+    }
+};
+
+pub const read = Any.read; 
+
+pub const Wasm = struct {
+    realpath: u.Txt,
+    bytes: u.Bin,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: Wasm) void {
+        self.allocator.free(self.bytes);
+        self.allocator.free(self.realpath);
+    }
+};
+
+pub const Text = struct {
+    realpath: u.Txt,
+    text: u.Txt,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: Text) void {
+        self.allocator.free(self.text);
+        self.allocator.free(self.realpath);
+    }
+
+    inline fn iter(self: Text) TextIterator {
+        return TextIterator.unsafeInit(self.text);
+    }    
+    inline fn parseAs(comptime sweet: bool) fn(*TextIterator, std.mem.Allocator) SweetParser.Error![]Expr {
+        return if (comptime sweet) SweetParser.parseAll else SParser.parseAll;
+    }
+
+    pub fn readAs(self: Text, comptime sweet: bool) ![]Expr {
+        var iter_ = self.iter();
+        return parseAs(sweet)(&iter_, self.allocator);
+    }
+    pub inline fn read(self: Text) ![]Expr {
+        return self.readAs(true);
+    }
+
+    pub fn tryReadAs(self: Text, comptime sweet: bool) ReadResult {
+        var iter_ = self.iter();
+        const exprs = parseAs(sweet)(&iter_, self.allocator) catch |err|
+            return .{ .err = .{ .kind = err, .at = iter_.peek().offset, .file = &self } };
+        return .{ .ok = exprs };
+    }
+    pub inline fn tryRead(self: Text) ReadResult {
+        return self.tryReadAs(true);
+    }
+
+    pub inline fn linePoint(self: Text, at: usize) LinePoint {
+        return LinePoint.init(self.text, at, self.realpath);
+    }
+};
 
 pub const ReadErr = struct {
     kind: anyerror,
     at: usize,
-    file: *const File,
+    file: *const Text,
 
     pub fn format(
         self: ReadErr,
@@ -60,37 +113,22 @@ pub const ReadResult = union(enum) {
     ok: []Expr,
     err: ReadErr,
 };
-pub fn tryReadS(self: *File) ReadResult {
-    var iter = TextIterator.init(self.text);
-    const exprs = SParser.parseAll(&iter, self.arena.allocator())
-        catch |err| return .{ .err = .{ .kind = err, .at = iter.peek().offset, .file = self } };
-    return .{ .ok = exprs };
-}
-pub fn tryRead(self: *File) ReadResult {
-    var iter = TextIterator.init(self.text);
-    const exprs = SweetParser.parseAll(&iter, self.arena.allocator())
-        catch |err| return .{ .err = .{ .kind = err, .at = iter.peek().offset, .file = self } };
-    return .{ .ok = exprs };
-}
 
-pub inline fn linePoint(self: File, at: usize) LinePoint {
-    return LinePoint.init(self.text, at, self.realpath);
-}
-
-/// Human readable file position
+/// Human readable text file position
 pub const Position = struct {
     column: usize = 1,
     line: usize = 1,
 };
 
-/// Human readable file position pointer
+/// Human readable text file position pointer
 pub const LinePoint = struct {
-    path: []const u8,
-    text: []const u8,
+    path: u.Txt,
+    line: u.Txt,
     offset: usize,
     at: Position,
 
-    pub fn init(text: []const u8, offset: usize, path: []const u8) LinePoint {
+    pub fn init(text: u.Txt, offset: usize, path: u.Txt) LinePoint {
+        std.debug.assert(u.isTxt(text));
         var iter = TextIterator.Inner{ .bytes = text };
         var p: Position = .{ };
         var last_line: usize = 0;
@@ -107,7 +145,7 @@ pub const LinePoint = struct {
         }
 
         const end_line = last_line + (TextIterator.indexOfCodePoint(text[last_line..], '\n') orelse text[last_line..].len);
-        return LinePoint{ .path = path, .text = text[last_line..end_line], .offset = offset - last_line, .at = p };
+        return LinePoint{ .path = path, .line = text[last_line..end_line], .offset = offset - last_line, .at = p };
     }
 
     pub fn format(
@@ -123,7 +161,7 @@ pub const LinePoint = struct {
         if (!(link or line))
             try writer.print("{s}\n", .{fmt});
         if (!link) {
-            try writer.print("{s}\n", .{self.text});
+            try writer.print("{s}\n", .{self.line});
             var i: usize = 1;
             while (i < self.at.column) : (i += 1) {
                 try writer.writeByte(options.fill);

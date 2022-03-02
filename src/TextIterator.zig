@@ -1,3 +1,4 @@
+const u = @import("util.zig");
 const ziglyph = @import("ziglyph");
 pub const Inner = ziglyph.CodePointIterator;
 
@@ -7,8 +8,11 @@ cur: ?ziglyph.CodePoint,
 const Self = @This();
 const eofBytes = &[_]u8{};
 
-pub fn init(bytes: []const u8) Self {
-    var iter = Inner{ .bytes = bytes };
+pub inline fn init(bytes: u.Bin) !Self {
+    return unsafeInit(try u.toTxt(bytes));
+}
+pub fn unsafeInit(str: u.Txt) Self {
+    var iter = Inner{ .bytes = str };
     return Self{ .cur = iter.next(), .cp_iter = iter };
 }
 
@@ -30,7 +34,7 @@ pub fn eof(self: Self) bool {
     return self.cur == null;
 }
 
-pub fn readWhile(self: *Self, comptime pred: fn (u21) bool) []const u8 {
+pub fn readWhile(self: *Self, comptime pred: fn (u21) bool) u.Txt {
     if (self.cur) |p| {
         while (self.cur != null and pred(self.cur.?.scalar)) {
             self.skip();
@@ -44,7 +48,7 @@ pub fn readWhile(self: *Self, comptime pred: fn (u21) bool) []const u8 {
 
 pub const isSpace = ziglyph.isWhiteSpace;
 
-pub fn indexOfCodePoint(str: []const u8, scalar: u21) ?usize {
+pub fn indexOfCodePoint(str: u.Txt, scalar: u21) ?usize {
     var iter = Inner{ .bytes = str };
     while (iter.next()) |cp| {
         if (cp.scalar == scalar)
