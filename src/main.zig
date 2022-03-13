@@ -1,8 +1,7 @@
 const std = @import("std");
 const args = @import("args");
-const Expr = @import("Expr.zig");
 const File = @import("File.zig");
-
+const Loader = @import("Loader.zig");
 
 const TopOptions = struct {
     help: bool = false,
@@ -63,7 +62,7 @@ pub fn main() !void {
 }
 
 const ParseOptions = struct {
-    format: Expr.Format = .human,
+    format: @import("Expr.zig").Format = .human,
 };
 fn parse_usage(fatal: bool) noreturn {
     errPrint("{s}", .{
@@ -101,16 +100,24 @@ inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) !vo
     }
 }
 
-const BuildFormat = enum { compact, human }; //TODO: binary
+inline fn aLoader() Loader {
+    return .{
+        .allocator = top_alloc,
+        .readErr = struct { fn readErr(err: File.ReadErr) void {
+            errPrint("{}", .{ err });
+        } }.readErr,
+    };
+}
+
 const BuildOptions = struct {
-    format: BuildFormat = .compact,
+    format: enum { compact, human, binary } = .binary,
 };
 fn build_usage(fatal: bool) noreturn {
     errPrint("{s}", .{
         \\Usage: wala build <file> [options]
         \\
         \\Options:
-        \\  --format      Output format (compact, human)
+        \\  --format      Output format (compact, human, binary)
         \\  -h, --help    Print this usage information
         \\
         \\Examples:
@@ -126,27 +133,20 @@ inline fn build(options: BuildOptions, positionals: Positionals, help: bool) !vo
         build_usage(true);
     }
 
-    var file = File.read(positionals[0], top_alloc) catch |err| fatalErr(err);
-    defer file.deinit();
+    var loader = aLoader();
+    const module = loader.load(positionals[0]) catch |err| fatalErr(err);
+    defer module.deinit();
 
-    switch (file.text.tryRead()) {
-        .ok => |exprs| {
-            const wat = exprs; //TODO: load and check
-
-            const writer = std.io.getStdOut().writer();
-            wat.print(switch (options.format) {
-                .compact => .compact,
-                .human => .human,
-            }, writer) catch unreachable;
-            writer.writeByte('\n') catch unreachable;
-        },
-        .err => |err| fatalErr(err)
+    const writer = std.io.getStdOut().writer();
+    switch (options.format) {
+        .binary => try Loader.writeWasm(module, writer),
+        .compact => try Loader.writeText(module, writer, loader.allocator, .compact),
+        .human => try Loader.writeText(module, writer, loader.allocator, .human),
     }
 }
 
 const RunOptions = struct {
     runtime: []const u8 = "wasmtime",
-    builder: []const u8 = "wat2wasm", // TODO: replace with BuildFormat.binary
 };
 fn run_usage(fatal: bool) noreturn {
     errPrint("{s}", .{
@@ -169,36 +169,22 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) !void {
         run_usage(true);
     }
 
-    var file = File.read(positionals[0], top_alloc) catch |err| fatalErr(err);
-    defer file.deinit();
+    var loader = aLoader();
+    const module = try loader.load(positionals[0]);
+    defer module.deinit();
 
-    //TODO: if wasm
-    switch (file.text.tryRead()) {
-        .ok => |exprs| {
-            const wat = exprs;
+    var tmpDir = std.testing.tmpDir(.{});
+    defer tmpDir.cleanup();
 
-            var tmpDir = std.testing.tmpDir(.{});
-            defer tmpDir.cleanup();
+    const wasmName = "run.wasm";
 
-            const watName = "run.wat";
-            const wasmName = "run.wasm";
+    const wasmFile = tmpDir.dir.createFile(wasmName, .{}) catch unreachable;
+    try Loader.writeWasm(module, wasmFile.writer());
+    wasmFile.close();
 
-            const watFile = tmpDir.dir.createFile(watName, .{}) catch unreachable;
-            wat.print(.compact, watFile.writer()) catch unreachable;
-            watFile.close();
-            
-            // TODO: check Term
-            _ = try std.ChildProcess.exec(.{
-                .allocator = top_alloc,
-                .argv = &[_][]const u8 {options.builder, watName, "-o", wasmName},
-                .cwd_dir = tmpDir.dir
-            });
-
-            const runtime = std.ChildProcess.init(&[_][]const u8 {options.runtime, wasmName}, top_alloc) catch unreachable;
-            defer runtime.deinit();
-            runtime.cwd_dir = tmpDir.dir;
-            _ = try runtime.spawnAndWait();
-        },
-        .err => |err| fatalErr(err)
-    }
+    const runtime = std.ChildProcess.init(
+        &[_][]const u8 {options.runtime, wasmName}, top_alloc) catch unreachable;
+    defer runtime.deinit();
+    runtime.cwd_dir = tmpDir.dir;
+    _ = try runtime.spawnAndWait();
 }
