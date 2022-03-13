@@ -1,4 +1,5 @@
 const std = @import("std");
+const u = @import("util.zig");
 pub const Expr = @import("Expr.zig");
 pub const TextIterator = @import("TextIterator.zig");
 
@@ -29,6 +30,7 @@ fn skipSpaces(iter: *TextIterator) void {
 pub const Error = error {
     UnexpectedEndOfFile,
     OutOfMemory,
+    InvalidUtf8,
 };
 fn mayParseOneBlock(iter: *TextIterator, alloc: std.mem.Allocator, infix: bool) Error!?std.ArrayList(Expr) {
     const open: u21 = if (infix) '{' else '(';
@@ -74,6 +76,15 @@ fn mayParseOneBlock(iter: *TextIterator, alloc: std.mem.Allocator, infix: bool) 
 
     return list;
 }
+inline fn digit(c: u21) !u8 {
+    const t = @truncate(u8, c);
+    return switch(c) {
+        '0'...'9' => t-'0',
+        'A'...'F' => t-'A'+10,
+        'a'...'f' => t-'a'+10,
+        else => error.InvalidUtf8
+    };
+}
 inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?Expr.Val {
     const infix = iter.peek().scalar == '{';
     if (iter.peek().scalar == '(' or infix) {
@@ -94,7 +105,25 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
                     return error.UnexpectedEndOfFile;
 
                 if (iter.peek().scalar == '\\') {
-                    //TODO: unescape string
+                    const n = iter.next() orelse
+                        return error.UnexpectedEndOfFile;
+                    switch (n.scalar) {
+                        't' => try str.append('\t'),
+                        'n' => try str.append('\n'),
+                        'r' => try str.append('\r'),
+                        '"' => try str.append('"'),
+                        '\'' => try str.append('\''),
+                        '\\' => try str.append('\\'),
+                        'u' => {
+                            unreachable;
+                            //TODO: {hexnum}
+                        },
+                        else => {
+                            const m = iter.next() orelse
+                                return error.UnexpectedEndOfFile;
+                            try str.append((try digit(n.scalar))*16 + try digit(m.scalar));
+                        }
+                    }
                 }
                 try str.appendSlice(iter.peek().bytes);
                 iter.skip();
@@ -114,11 +143,11 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
         }
 
         if (dollared) {
-            return Expr.Val{ .ident = text };
+            return Expr.Val{ .id = try u.toTxt(text) };
         } else if (quoted) {
-            return Expr.Val{ .str = text };
+            return Expr.Val{ .string = text };
         } else
-            return Expr.Val{ .name = text };
+            return Expr.Val{ .keyword = text };
     }
 }
 

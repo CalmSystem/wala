@@ -6,6 +6,10 @@ const Expr = @This();
 val: Val,
 at: ?Range = null,
 
+pub fn deinit(e: Expr, allocator: std.mem.Allocator) void {
+    e.val.deinit(allocator);
+}
+
 const Range = struct {
     offset: usize,
     len: usize,
@@ -31,9 +35,9 @@ pub const Format = enum {
 
 pub const Val = union(enum) {
     list: []Expr,
-    name: u.Txt,
-    str: u.Txt,
-    ident: u.Txt,
+    keyword: u.Txt,
+    string: u.Bin, //MAYBE: split string in { name, binary }
+    id: u.Txt,
 
     fn deinit(self: Val, allocator: std.mem.Allocator) void {
         switch(self) {
@@ -48,35 +52,45 @@ pub const Val = union(enum) {
 
     fn asText(self: Val) ?u.Txt {
         return switch(self) {
-            .name,.str,.ident => |str| str,
+            .keyword,.string,.id => |str| str,
             else => null
         };
     }
 
-    const Func = struct {
+    pub const Func = struct {
         name: u.Txt,
-        args: []Expr,
+        id: ?u.Txt = null,
+        args: []Expr = &[_]Expr{},
     };
     pub fn asFunc(self: Val) ?Func {
         switch(self) {
-            .list => |exprs| {
-                if (exprs.len > 0) if(exprs[0].val.asName()) |name|
-                    return Func{ .name = name, .args = exprs[1..] };
-            },
+            .list => |exprs| { if (exprs.len > 0) {
+                if (exprs[0].val.asKeyword()) |name| {
+                    const id = if (exprs.len > 1) exprs[1].val.asId() else null;
+                    const offset: usize = if (id != null) 2 else 1;
+                    return Func{ .name = name, .id = id, .args = exprs[offset..] };
+                }
+            } },
             else => {}
         }
         return null;
     }
 
-    inline fn asName(self: Val) ?u.Txt {
+    pub inline fn asKeyword(self: Val) ?u.Txt {
         return switch(self) {
-            .name => |name| name,
+            .keyword => |keyword| keyword,
             else => null
         };
     }
-    pub inline fn asIdent(self: Val) ?u.Txt {
+    pub inline fn asId(self: Val) ?u.Txt {
         return switch(self) {
-            .ident => |ident| ident,
+            .id => |id| id,
+            else => null
+        };
+    }
+    pub inline fn asString(self: Val) ?u.Bin {
+        return switch(self) {
+            .string => |str| str,
             else => null
         };
     }
@@ -104,9 +118,8 @@ pub const Val = union(enum) {
                 switch(fmt) {
                     .compact => {
                         try writer.writeByte('(');
-                        var i: usize = 0;
-                        while (i < list.len): (i += 1) {
-                            try list[i].val.print(fmt, writer, 0);
+                        for (list) |expr, i| {
+                            try expr.val.print(fmt, writer, 0);
                             if (i+1 < list.len)
                                 try writer.writeByte(' ');
                         }
@@ -119,14 +132,14 @@ pub const Val = union(enum) {
                         if (list.len > 0)
                             try list[0].val.print(fmt, writer, depth);
                         var i: usize = 1;
-                        while (i < list.len): (i += 1) {
+                        for (list) |expr| {
                             if (fmt != .tree and list[i-1].val.asText() != null and list[i].val.asText() != null) {
                                 try writer.writeByte(' ');
                             } else {
                                 try writer.writeByte('\n');
                                 try writer.writeByteNTimes(' ', depth);
                             }
-                            try list[i].val.print(fmt, writer, depth);
+                            try expr.val.print(fmt, writer, depth);
                         }
                         if (fmt != .sweet) {
                             try writer.writeByte(')');
@@ -134,14 +147,14 @@ pub const Val = union(enum) {
                     }
                 }
             },
-            .name => |str| {
+            .keyword => |str| {
                 try writer.writeAll(str);
             },
-            .ident => |str| {
+            .id => |str| {
                 try writer.writeByte('$');
                 try writer.writeAll(str);
             },
-            .str => |str| {
+            .string => |str| {
                 try writer.writeByte('"');
                 try writer.writeAll(str);
                 try writer.writeByte('"');
