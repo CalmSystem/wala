@@ -39,14 +39,14 @@ fn top_usage(fatal: bool) noreturn {
     std.os.exit(@boolToInt(fatal));
 }
 fn fatalErr(err: anytype) noreturn {
-    errPrint("{}\n", .{ err });
+    errPrint("fatal: {}\n", .{ err });
     std.os.exit(1);
 }
 
 const top_alloc = std.heap.page_allocator;
 
 
-pub fn main() !void {
+pub fn main() void {
     const argv = args.parseWithVerbForCurrentProcess(TopOptions, Command, top_alloc, .print) catch top_usage(true);
     defer argv.deinit();
 
@@ -54,9 +54,9 @@ pub fn main() !void {
     const command = argv.verb orelse top_usage(!help);
 
     switch (command) {
-        .run => |options| try run(options, argv.positionals, help),
-        .build => |options| try build(options, argv.positionals, help),
-        .parse => |options| try parse(options, argv.positionals, help),
+        .run => |options| run(options, argv.positionals, help),
+        .build => |options| build(options, argv.positionals, help),
+        .parse => |options| parse(options, argv.positionals, help),
         .help => top_usage(false),
     }
 }
@@ -78,7 +78,7 @@ fn parse_usage(fatal: bool) noreturn {
     });
     std.os.exit(@boolToInt(fatal));
 }
-inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) !void {
+inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) void {
     if (help) parse_usage(false);
     if (positionals.len != 1) {
         errPrint("Expect 1 argument got {}\n", .{positionals.len});
@@ -103,9 +103,9 @@ inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) !vo
 inline fn aLoader() Loader {
     return .{
         .allocator = top_alloc,
-        .readErr = struct { fn readErr(err: File.ReadErr) void {
-            errPrint("{}", .{ err });
-        } }.readErr,
+        .errAt = struct { fn do(err: File.ErrPoint) void {
+            errPrint("{}\n", .{ err });
+        } }.do,
     };
 }
 
@@ -126,7 +126,7 @@ fn build_usage(fatal: bool) noreturn {
     });
     std.os.exit(@boolToInt(fatal));
 }
-inline fn build(options: BuildOptions, positionals: Positionals, help: bool) !void {
+inline fn build(options: BuildOptions, positionals: Positionals, help: bool) void {
     if (help) build_usage(false);
     if (positionals.len != 1) {
         errPrint("Expect 1 argument got {}\n", .{positionals.len});
@@ -139,9 +139,9 @@ inline fn build(options: BuildOptions, positionals: Positionals, help: bool) !vo
 
     const writer = std.io.getStdOut().writer();
     switch (options.format) {
-        .binary => try Loader.writeWasm(module, writer),
-        .compact => try Loader.writeText(module, writer, loader.allocator, .compact),
-        .human => try Loader.writeText(module, writer, loader.allocator, .human),
+        .binary => Loader.writeWasm(module, writer) catch unreachable,
+        .compact => Loader.writeText(module, writer, loader.allocator, .compact) catch unreachable,
+        .human => Loader.writeText(module, writer, loader.allocator, .human) catch unreachable,
     }
 }
 
@@ -162,7 +162,7 @@ fn run_usage(fatal: bool) noreturn {
     });
     std.os.exit(@boolToInt(fatal));
 }
-inline fn run(options: RunOptions, positionals: Positionals, help: bool) !void {
+inline fn run(options: RunOptions, positionals: Positionals, help: bool) void {
     if (help) run_usage(false);
     if (positionals.len != 1) {
         errPrint("Expect 1 argument got {}\n", .{positionals.len});
@@ -170,7 +170,7 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) !void {
     }
 
     var loader = aLoader();
-    const module = try loader.load(positionals[0]);
+    const module = loader.load(positionals[0]) catch |err| fatalErr(err);
     defer module.deinit();
 
     var tmpDir = std.testing.tmpDir(.{});
@@ -179,12 +179,12 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) !void {
     const wasmName = "run.wasm";
 
     const wasmFile = tmpDir.dir.createFile(wasmName, .{}) catch unreachable;
-    try Loader.writeWasm(module, wasmFile.writer());
+    Loader.writeWasm(module, wasmFile.writer()) catch unreachable;
     wasmFile.close();
 
     const runtime = std.ChildProcess.init(
         &[_][]const u8 {options.runtime, wasmName}, top_alloc) catch unreachable;
     defer runtime.deinit();
     runtime.cwd_dir = tmpDir.dir;
-    _ = try runtime.spawnAndWait();
+    _ = runtime.spawnAndWait() catch unreachable;
 }

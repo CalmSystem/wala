@@ -29,28 +29,44 @@ const Indices = struct {
     }
 };
 
-pub fn loadRec(exprs: []const Expr, allocator: std.mem.Allocator, loader: anytype) !IR.Module {
+const Result = union(enum) {
+    ok: IR.Module,
+    err: struct {
+        kind: anyerror,
+        at: ?Expr = null,
+    },
+};
+pub fn tryLoad(exprs: []const Expr, allocator: std.mem.Allocator, loader: anytype) Result {
     //TODO: load recussive with (use ?id name)
     _ = loader.load;
 
-    var m: ?IR.Module = null; 
+    var module: ?IR.Module = null;
     for (exprs) |expr| {
         const func = asFuncNamed(expr, MODULE_KEY.keyword) orelse continue;
-        const child = try loadModule(func.args, allocator);
-        if (m) |parent| {
-            m = try IR.Module.link(&[_]IR.Module{parent, child}, allocator);
+        const child = switch (tryLoadModule(func.args, allocator)) {
+            .ok => |m| m,
+            .err => |err| return .{ .err = err },
+        };
+        if (module) |parent| {
+            module = IR.Module.link(&[_]IR.Module{parent, child}, allocator) catch |err|
+                return .{ .err = .{ .kind = err } };
             parent.deinit();
         } else {
-            m = child;
+            module = child;
         }
     }
 
-    return m orelse // without top module
-        try loadModule(exprs, allocator);
+    return if (module) |m| .{ .ok = m }
+        else // without top module
+            tryLoadModule(exprs, allocator);
 }
-pub fn loadModule(exprs: []const Expr, allocator: std.mem.Allocator) !IR.Module {
+fn tryLoadModule(exprs: []const Expr, allocator: std.mem.Allocator) Result {
     var ctx = Ctx{ .gpa = allocator, .m = IR.Module.init(allocator) };
-    
+    const module = ctx._loadModule(exprs) catch |err|
+        return .{ .err = .{ .kind = err, .at = ctx.at } };
+    return .{ .ok = module };
+}
+fn _loadModule(ctx: *Ctx, exprs: []const Expr) !IR.Module {
     // name = if (exprs[0] dollared) ident else "env"
 
     var I: Indices = .{};
@@ -104,7 +120,6 @@ inline fn buildIndices(ctx: *Ctx, I: *Indices, expr: Expr, comptime importParent
         // .type => {
         //     if (importParent) return error.BadImport;
         //     //TODO: add to index
-        //     std.log.debug("typeI: {any}", .{ func });
         // },
         .func => {
             const importAbbrev = try hasImportAbbrev(func.args, importParent);
@@ -125,8 +140,9 @@ inline fn buildIndices(ctx: *Ctx, I: *Indices, expr: Expr, comptime importParent
             if (func.args.len != 3) return error.Empty;
             try ctx.buildIndices(I, func.args[2], true);
         },
-        else => std.log.warn("ignore {s} index", .{ func.name })
-    }        
+        //TODO: remove else branch
+        else => std.log.warn("Unhandled section {s} index", .{ func.name })
+    }
 }
 
 fn loadDefinition(ctx: *Ctx, expr: Expr) !void {
@@ -145,10 +161,8 @@ fn loadDefinition(ctx: *Ctx, expr: Expr) !void {
         //start
         //elem
         .data => try ctx.loadData(func.args),
-        else => { //TODO: remove
-            std.log.err("Unhandled section {} {}", .{ section, func });
-            unreachable;
-        }
+        //TODO: remove else branch
+        else => std.log.warn("Unhandled section {} {}", .{ section, func })
     }
 }
 
@@ -158,7 +172,7 @@ fn loadType(_: *Ctx, _: []const Expr) !void {
 fn loadImport(ctx: *Ctx, args: []const Expr) !void {
     if (args.len != 3) return error.Empty;
     const name = try ctx.importName(args[0..2]);
-    
+
     ctx.at = args[2];
     const func = args[2].val.asFunc() orelse return error.BadImport;
     const kind = std.meta.stringToEnum(TopDefinition, func.name) orelse return error.BadImport;
@@ -183,7 +197,7 @@ fn loadFunc(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void {
     var typ = try ctx.typeuse(io.remain);
     defer typ.deinit(ctx);
     f.type = typ.val;
-    
+
     if (importParent != null or importAbbrev) {
         if (typ.remain.len > 0)
             return error.ImportWithBody;
@@ -194,7 +208,7 @@ fn loadFunc(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void {
         typ.params = try ctx.gpa.realloc(typ.params, n_p + locals.types.len);
 
         const insts = try valtypes(typ.remain, "local", locals.types, typ.params[n_p..], false);
-        
+
         var codegen = try Codegen.initFunc(ctx, typ.val.params, locals.types, typ.params);
         defer codegen.deinit();
 
@@ -212,7 +226,7 @@ fn loadMemory(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void
 
     //TODO: data abbrev
     const memtyp = try limit(io.remain);
-    
+
     const id = if (ctx.m.memory) |m| m.id else null;
     ctx.m.memory = .{
         .id = id,
@@ -236,7 +250,7 @@ fn loadData(ctx: *Ctx, args: []Expr) !void {
             }
             const exprs = if (asFuncNamed(args[i], "offset")) |func|
                 func.args else args[i..i+1];
-            
+
             var codegen = Codegen.initExpr(ctx);
             defer codegen.deinit();
             for (exprs) |expr|
@@ -379,7 +393,7 @@ fn allocValtypes(ctx: *Ctx, args: []const Expr, comptime name: u.Txt) !AllocVaty
     }
     return AllocVatypes{
         .types = try ctx.m_allocator().alloc(IR.Func.Valtype, n),
-        .remain = args[i..] 
+        .remain = args[i..]
     };
 }
 fn valtypes(args: []const Expr, comptime name: u.Txt, types: []IR.Func.Valtype, ids: ?[]?u.Txt, check: bool) ![]const Expr {
@@ -393,7 +407,7 @@ fn valtypes(args: []const Expr, comptime name: u.Txt, types: []IR.Func.Valtype, 
             const v = try valtype(arg);
             if (check and types[n] != v)
                 return error.TypeMismatch;
-            
+
             types[n] = v;
             n += 1;
             //TODO: abbrev ident
@@ -406,10 +420,10 @@ fn typeuse(ctx: *Ctx, args: []const Expr) !TypeUse {
     var val_params: []IR.Func.Valtype = undefined;
     var val_results: []IR.Func.Valtype = undefined;
     var templated = false;
+    // TODO: templated type use
     // if (args.len > 0) {
     //     if (asFuncNamed(args[0], "type")) |func| {
     //         _ = func;
-    //         return error.WIP;
     //     }
     // }
     if (!templated) {
@@ -552,84 +566,83 @@ const Codegen = struct {
     }
 
     const Error = error{
-        NotOp, Empty, WIP, NotDigit, Overflow, NotInt, OutOfMemory,
+        NotOp, Empty, NotDigit, Overflow, NotInt, OutOfMemory,
         Signed, TypeMismatch, NotFound, NotPow2,
     };
     fn inst(self: *Codegen, expr: Expr) Error!void {
+        self.ctx.at = expr;
         const func = expr.val.asFunc() orelse Expr.Val.Func{
             .name = expr.val.asKeyword() orelse return error.NotOp };
 
-        if (nameToOp(func.name)) |op| {
-            const take = switch (op) {
-                .i32_const => 1,
-                .i32_store => nMemarg(func.args),
-                .call => @boolToInt(func.id == null),
-                else => 0
-            };
-            if (take > func.args.len) return error.Empty;
-            
-            for (func.args[take..]) |fold|
-                try self.inst(fold);
-
-            switch (op) {
-                .i32_const => {
-                    const i = try i32_(func.args[0]);
-
-                    try self.opcode(op);
-                    try self.ileb(i);
-
-                    try self.push(IR.Func.Valtype.i32);
-                },
-                .i32_store => {
-                    const arg = try memarg(func.args, 4);
-
-                    try self.pop(IR.Func.Valtype.i32);
-                    try self.pop(IR.Func.Valtype.i32);
-
-                    try self.opcode(op);
-                    try self.uleb(arg.align_);
-                    try self.uleb(arg.offset);
-                },
-                .call => {
-                    var i: u32 = undefined;
-                    var typ: IR.Func.Type = undefined;
-                    if (func.id) |id| {
-                        for (self.ctx.m.funcs) |f, j| {
-                            if (f.id) |id2| {
-                                if (u.strEql(id, id2)) {
-                                    typ = f.type;
-                                    i = @truncate(u32, j);
-                                    break;
-                                }
-                            }
-                        } else
-                            return error.NotFound;
-                    } else {
-                        i = try u32_(func.args[0]);
-                        if (i > self.ctx.m.funcs.len) return error.NotFound;
-                        typ = self.ctx.m.funcs[i].type;
-                    }
-
-                    try self.pops(typ.params);
-
-                    try self.opcode(op);
-                    try self.uleb(i);
-
-                    try self.pushs(typ.returns);
-                },
-                .drop => {
-                    try self.pop(null);
-
-                    try self.opcode(op);
-                },
-                else => {
-                    std.log.err("UnhandledOp {}", .{ op });
-                    return error.WIP;
-                }
-            }
-        } else {
-            std.log.err("{s}", .{ func.name });
+        const op = nameToOp(func.name) orelse {
+            //MAYBE: switch custom op
             return error.NotOp;
+        };
+
+        const take = switch (op) {
+            .i32_const => 1,
+            .i32_store => nMemarg(func.args),
+            .call => @boolToInt(func.id == null),
+            else => 0
+        };
+        if (take > func.args.len) return error.Empty;
+
+        for (func.args[take..]) |fold|
+            try self.inst(fold);
+
+        switch (op) {
+            .i32_const => {
+                const i = try i32_(func.args[0]);
+
+                try self.opcode(op);
+                try self.ileb(i);
+
+                try self.push(IR.Func.Valtype.i32);
+            },
+            .i32_store => {
+                const arg = try memarg(func.args, 4);
+
+                try self.pop(IR.Func.Valtype.i32);
+                try self.pop(IR.Func.Valtype.i32);
+
+                try self.opcode(op);
+                try self.uleb(arg.align_);
+                try self.uleb(arg.offset);
+            },
+            .call => {
+                var i: u32 = undefined;
+                var typ: IR.Func.Type = undefined;
+                if (func.id) |id| {
+                    for (self.ctx.m.funcs) |f, j| {
+                        if (f.id) |id2| {
+                            if (u.strEql(id, id2)) {
+                                typ = f.type;
+                                i = @truncate(u32, j);
+                                break;
+                            }
+                        }
+                    } else
+                        return error.NotFound;
+                } else {
+                    i = try u32_(func.args[0]);
+                    if (i > self.ctx.m.funcs.len) return error.NotFound;
+                    typ = self.ctx.m.funcs[i].type;
+                }
+
+                try self.pops(typ.params);
+
+                try self.opcode(op);
+                try self.uleb(i);
+
+                try self.pushs(typ.returns);
+            },
+            .drop => {
+                try self.pop(null);
+
+                try self.opcode(op);
+            },
+            //TODO: remove else branch
+            else => std.log.warn("Unhandled Op {}", .{ op })
         }
     }
     fn nameToOp(name: u.Txt) ?IR.Opcode {
@@ -673,7 +686,7 @@ const Codegen = struct {
 
     fn end(self: *Codegen, results: []const IR.Func.Valtype) !void {
         if (self.bytes.items.len > 0 and self.bytes.items[self.bytes.items.len-1] == IR.opcode(IR.Opcode.end)) return;
-        try self.pops(results); 
+        try self.pops(results);
         try self.opcode(IR.Opcode.end);
     }
     fn dupe(self: Codegen, allocator: std.mem.Allocator) !IR.Code {
@@ -685,7 +698,7 @@ const Codegen = struct {
 
     fn reserve(self: *Codegen, n: usize) !void {
         try self.bytes.ensureUnusedCapacity(self.ctx.gpa, n);
-    } 
+    }
     fn byte(self: *Codegen, b: u8) !void {
         try self.bytes.append(self.ctx.gpa, b);
     }

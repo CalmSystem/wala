@@ -49,6 +49,7 @@ fn Emitter(comptime Writer: type) type {
             try e.uleb(size.bytes_written);
             try @field(e, fn_name)();
         }
+
         fn uleb(e: E, v: usize) !void {
             return std.leb.writeULEB128(e.writer, v);
         }
@@ -59,6 +60,13 @@ fn Emitter(comptime Writer: type) type {
         fn byte(e: E, b: u8) !void {
             return e.writer.writeByte(b);
         }
+        fn limits(e: E, l: std.wasm.Limits) !void {
+            try e.byte(@boolToInt(l.max != null));
+            try e.uleb(l.min);
+            if (l.max) |max|
+                try e.uleb(max);
+        }
+
         fn typeSection(e: E) !void {
             //MAYBE: deduplicate
             //NOTE: reftype not handled...
@@ -90,7 +98,17 @@ fn Emitter(comptime Writer: type) type {
                 try e.byte(@enumToInt(cur.kind));
                 switch (cur.kind) {
                     .function => try e.uleb(cur.index),
-                    else => @panic("WIP")
+                    .table => {
+                        const t = &e.m.tables[cur.index];
+                        try e.byte(std.wasm.reftype(t.type));
+                        try e.limits(t.size);
+                    },
+                    .memory => try e.limits(e.m.memory.?.size),
+                    .global => {
+                        const g = &e.m.globals[cur.index];
+                        try e.byte(std.wasm.valtype(g.type));
+                        try e.byte(@boolToInt(g.mutable));
+                    },
                 }
             }
         }
@@ -113,13 +131,10 @@ fn Emitter(comptime Writer: type) type {
             }
         }
         fn memorySection(e: E) !void {
-            if (e.m.memory) |mem| {
+            if (e.m.memory) |mem| if (mem.import == null) {
                 try e.uleb(1);
-                try e.byte(@boolToInt(mem.size.max != null));
-                try e.uleb(mem.size.min);
-                if (mem.size.max) |max|
-                    try e.uleb(max);
-            }
+                try e.limits(mem.size);
+            };
         }
         fn exportSection(e: E) !void {
             var len: usize = 0;

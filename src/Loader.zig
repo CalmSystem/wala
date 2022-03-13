@@ -7,7 +7,7 @@ const Wasm = @import("Wasm.zig");
 
 allocator: std.mem.Allocator,
 trace: std.ArrayListUnmanaged(u.Txt) = .{},
-readErr: fn(err: File.ReadErr) void,
+errAt: fn(point: File.ErrPoint) void,
 
 const Self = @This();
 
@@ -18,14 +18,22 @@ pub fn load(self: *Self, entry: u.Txt) !IR.Module {
 
     return switch (file) {
         .text => |text| switch (text.tryRead()) {
-            .ok => |exprs| //TODO: Wat.tryLoad and watErr
-                try Wat.loadRec(exprs, self.allocator, self),
+            .ok => |exprs| switch (Wat.tryLoad(exprs, self.allocator, self)) {
+                .ok => |m| m,
+                .err => |err| {
+                    if (err.at != null and err.at.?.at != null) self.errAt(.{
+                        .kind = err.kind, .file = &text,
+                        .at = err.at.?.at.?.offset
+                    });
+                    return err.kind;
+                }
+            },
             .err => |err| {
-                self.readErr(err);
+                self.errAt(err);
                 return err.kind;
             }
         },
-        .wasm => |wasm| //TODO: Wasm.tryLoad and wasmErr
+        .wasm => |wasm| //MAYBE: Wasm.tryLoad and Self.errAtBin
             try Wasm.load(wasm.bytes, self.allocator),
     };
 }

@@ -80,6 +80,8 @@ pub const Global = struct {
     },
     id: ?u.Txt,
     exports: []const ExportName = &[_]ExportName{},
+    type: Func.Valtype,
+    mutable: bool,
 };
 
 pub const Elem = struct {

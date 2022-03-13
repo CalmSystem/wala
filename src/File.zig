@@ -41,7 +41,7 @@ pub const Any = union(Type) {
     }
 };
 
-pub const read = Any.read; 
+pub const read = Any.read;
 
 pub const Wasm = struct {
     realpath: u.Txt,
@@ -66,7 +66,7 @@ pub const Text = struct {
 
     inline fn iter(self: Text) TextIterator {
         return TextIterator.unsafeInit(self.text);
-    }    
+    }
     inline fn parseAs(comptime sweet: bool) fn(*TextIterator, std.mem.Allocator) SweetParser.Error![]Expr {
         return if (comptime sweet) SweetParser.parseAll else SParser.parseAll;
     }
@@ -94,13 +94,13 @@ pub const Text = struct {
     }
 };
 
-pub const ReadErr = struct {
+pub const ErrPoint = struct {
     kind: anyerror,
     at: usize,
     file: *const Text,
 
     pub fn format(
-        self: ReadErr,
+        self: ErrPoint,
         comptime _: []const u8,
         _: std.fmt.FormatOptions,
         writer: anytype,
@@ -111,7 +111,7 @@ pub const ReadErr = struct {
 };
 pub const ReadResult = union(enum) {
     ok: []Expr,
-    err: ReadErr,
+    err: ErrPoint,
 };
 
 /// Human readable text file position
