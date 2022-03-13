@@ -83,26 +83,29 @@ Like function calls
 - `sum(a b c)` -> `(sum a b c)`
 - `f{n + 1}` -> `(f (+ n 1))`
 
-### Planned
-
-### Short const and vars
+#### Short const
 
 - `42i32` -> `(i32.const 42)`
-- `1.3f64` -> `(f64.const 1.3)`
+<!-- TODO: - `1.3f64` -> `(f64.const 1.3)` -->
+
+### Planned
+
+#### Short var
+
 - `$var@l` -> `(local.get $var)`
 - `$log@g` -> `(global.get $log)`
-
-#### Common Operations
-
-- `(i32.+ a b)` -> `(i32.add a b)`
 
 #### Result Type Deduction
 
 No need to specify blocks and function result types
 
-#### Operation Type Deduction
+#### Operator Type Deduction
 
 - `(add (i32.const 35) 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
+
+#### Common Operators
+
+- `(+ 35 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
 
 #### Name expansion
 

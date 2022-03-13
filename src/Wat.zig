@@ -530,6 +530,12 @@ fn u32_(arg: Expr) !u32 {
 fn i32_(arg: Expr) !i32 {
     return sN(arg, 32);
 }
+fn i64_(arg: Expr) !i64 {
+    return sN(arg, 64);
+}
+inline fn kv(str: u.Txt) Expr {
+    return .{ .val = .{ .keyword = str } };
+}
 
 const Codegen = struct {
     ctx: *Ctx,
@@ -575,7 +581,29 @@ const Codegen = struct {
             .name = expr.val.asKeyword() orelse return error.NotOp };
 
         const op = nameToOp(func.name) orelse {
-            //MAYBE: switch custom op
+            if (func.name.len > 3) { // Short const
+                const head = func.name[0..func.name.len-3];
+                const tail = func.name[func.name.len-3..];
+                if (std.meta.stringToEnum(IR.Func.Valtype, tail)) |typ| switch (typ) {
+                    .i32 => if (i32_(kv(head)) catch null) |i| {
+                        try self.opcode(IR.Opcode.i32_const);
+                        try self.ileb(i);
+
+                        return self.push(typ);
+                    },
+                    .i64 => if (i64_(kv(head)) catch null) |i| {
+                        try self.opcode(IR.Opcode.i64_const);
+                        try self.ileb(i);
+
+                        return self.push(typ);
+                    },
+                    //TODO: remove else branch
+                    else => @panic("WIP")
+                };
+            }
+
+            //TODO: more custom ops
+
             return error.NotOp;
         };
 
@@ -599,11 +627,29 @@ const Codegen = struct {
 
                 try self.push(IR.Func.Valtype.i32);
             },
+            .i64_const => {
+                const i = try i64_(func.args[0]);
+
+                try self.opcode(op);
+                try self.ileb(i);
+
+                try self.push(IR.Func.Valtype.i64);
+            },
             .i32_store => {
                 const arg = try memarg(func.args, 4);
 
                 try self.pop(IR.Func.Valtype.i32);
                 try self.pop(IR.Func.Valtype.i32);
+
+                try self.opcode(op);
+                try self.uleb(arg.align_);
+                try self.uleb(arg.offset);
+            },
+            .i64_store => {
+                const arg = try memarg(func.args, 8);
+
+                try self.pop(IR.Func.Valtype.i32);
+                try self.pop(IR.Func.Valtype.i64);
 
                 try self.opcode(op);
                 try self.uleb(arg.align_);
@@ -677,9 +723,9 @@ const Codegen = struct {
     fn memarg(exprs: []const Expr, n: u32) !MemArg {
         var i: usize = 0;
         const offset = if (kvarg(exprs, "offset")) |v|
-            try u32_(.{ .val = .{ .keyword = v } }) else 0;
+            try u32_(kv(v)) else 0;
         const x = if (kvarg(exprs[i..], "align")) |v|
-            try u32_(.{ .val = .{ .keyword = v } }) else n;
+            try u32_(kv(v)) else n;
         if (x == 0 or (x & (x - 1)) != 0) return error.NotPow2;
         return MemArg{ .offset = offset, .align_ = @ctz(u32, x) };
     }

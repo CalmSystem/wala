@@ -12,11 +12,11 @@ memory(export("memory") 1)
 data(i32.const(16) "Hello, W0rld!\n")
 
 func $main export("_start")
-  i32.store i32.const(8) i32.const(16)
-  i32.store offset=4 i32.const(8) i32.const(14)
+  i32.store 8i32 16i32
+  i32.store offset=4 8i32 14i32
   call $fd_write
-    i32.const(1) ;; fd: stdout
-    i32.const(8) ;; const ciovec*
-    i32.const(1) ;; len of ciovec
-    i32.const(4) ;; written*
+    1i32 ;; fd: stdout
+    8i32 ;; const ciovec*
+    1i32 ;; len of ciovec
+    4i32 ;; written*
   drop
