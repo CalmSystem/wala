@@ -164,8 +164,8 @@ fn run_usage(fatal: bool) noreturn {
 }
 inline fn run(options: RunOptions, positionals: Positionals, help: bool) void {
     if (help) run_usage(false);
-    if (positionals.len != 1) {
-        errPrint("Expect 1 argument got {}\n", .{positionals.len});
+    if (positionals.len == 0) {
+        errPrint("Expect at least 1 argument\n", .{});
         run_usage(true);
     }
 
@@ -182,8 +182,14 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) void {
     Loader.writeWasm(module, wasmFile.writer()) catch unreachable;
     wasmFile.close();
 
-    const runtime = std.ChildProcess.init(
-        &[_][]const u8 {options.runtime, wasmName}, top_alloc) catch unreachable;
+    const argv = top_alloc.alloc([]const u8, positionals.len+1) catch unreachable;
+    defer top_alloc.free(argv);
+    
+    argv[0] = options.runtime;
+    argv[1] = wasmName;
+    std.mem.copy([]const u8, argv[2..], positionals[1..]);
+
+    const runtime = std.ChildProcess.init(argv, top_alloc) catch unreachable;
     defer runtime.deinit();
     runtime.cwd_dir = tmpDir.dir;
     _ = runtime.spawnAndWait() catch unreachable;
