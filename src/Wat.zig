@@ -16,6 +16,7 @@ I: struct {
 } = .{},
 /// Parsing pointer
 at: ?Expr = null,
+err: ErrData = .none,
 
 const Ctx = @This();
 
@@ -29,10 +30,19 @@ const Indices = struct {
     }
 };
 
+const ErrData = union(enum) {
+    none: void,
+    typeMismatch: struct {
+        expect: ?Codegen.StackVal,
+        got: ?Codegen.StackVal,
+        index: ?usize = null,
+    },
+};
 const Result = union(enum) {
     ok: IR.Module,
     err: struct {
         kind: anyerror,
+        data: ErrData = .{ .none = void },
         at: ?Expr = null,
     },
 };
@@ -63,7 +73,7 @@ pub fn tryLoad(exprs: []const Expr, allocator: std.mem.Allocator, loader: anytyp
 fn tryLoadModule(exprs: []const Expr, allocator: std.mem.Allocator) Result {
     var ctx = Ctx{ .gpa = allocator, .m = IR.Module.init(allocator) };
     const module = ctx._loadModule(exprs) catch |err|
-        return .{ .err = .{ .kind = err, .at = ctx.at } };
+        return .{ .err = .{ .kind = err, .data = ctx.err, .at = ctx.at } };
     return .{ .ok = module };
 }
 fn _loadModule(ctx: *Ctx, exprs: []const Expr) !IR.Module {
@@ -207,7 +217,7 @@ fn loadFunc(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void {
         const n_p = typ.params.len;
         typ.params = try ctx.gpa.realloc(typ.params, n_p + locals.types.len);
 
-        const insts = try valtypes(typ.remain, "local", locals.types, typ.params[n_p..], false);
+        const insts = try ctx.valtypes(typ.remain, "local", locals.types, typ.params[n_p..], false);
 
         var codegen = try Codegen.initFunc(ctx, typ.val.params, locals.types, typ.params);
         defer codegen.deinit();
@@ -396,7 +406,7 @@ fn allocValtypes(ctx: *Ctx, args: []const Expr, comptime name: u.Txt) !AllocVaty
         .remain = args[i..]
     };
 }
-fn valtypes(args: []const Expr, comptime name: u.Txt, types: []IR.Func.Valtype, ids: ?[]?u.Txt, check: bool) ![]const Expr {
+fn valtypes(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []IR.Func.Valtype, ids: ?[]?u.Txt, check: bool) ![]const Expr {
     var i: usize = 0;
     var n: usize = 0;
     while (i < args.len): (i += 1) {
@@ -405,8 +415,14 @@ fn valtypes(args: []const Expr, comptime name: u.Txt, types: []IR.Func.Valtype, 
             slice[n] = param.id;
         for (param.args) |arg| {
             const v = try valtype(arg);
-            if (check and types[n] != v)
+            if (check and types[n] != v) {
+                self.err = .{ .typeMismatch = .{
+                    .expect = .{ .val = types[n] },
+                    .got = .{ .val = v },
+                    .index = n,
+                } };
                 return error.TypeMismatch;
+            }
 
             types[n] = v;
             n += 1;
@@ -436,13 +452,25 @@ fn typeuse(ctx: *Ctx, args: []const Expr) !TypeUse {
     }
     const params = try ctx.gpa.alloc(?u.Txt, val_params.len);
 
-    var remain = try valtypes(args[@boolToInt(templated)..], "param", val_params, params, templated);
-    remain = try valtypes(remain, "result", val_results, null, templated);
+    var remain = try ctx.valtypes(args[@boolToInt(templated)..], "param", val_params, params, templated);
+    remain = try ctx.valtypes(remain, "result", val_results, null, templated);
 
     return TypeUse{
         .val = .{ .params = val_params, .returns = val_results },
         .params = params, .remain = remain
     };
+}
+fn nTypeuse(args: []const Expr) usize {
+    var i: usize = 0;
+    if (args.len > 0 and asFuncNamed(args[0], "type") != null)
+        i += 1;
+    while (i < args.len): (i += 1) {
+        if (asFuncNamed(args[i], "param") == null) break;
+    }
+    while (i < args.len): (i += 1) {
+        if (asFuncNamed(args[i], "result") == null) break;
+    }
+    return i;
 }
 fn valtype(arg: Expr) !std.wasm.Valtype {
     //TODO: reftype, vectype, interfacetype
@@ -545,8 +573,45 @@ const Codegen = struct {
         first: []const IR.Func.Valtype,
         second: []const IR.Func.Valtype,
         ids: []const ?u.Txt,
+
+        inline fn get(it: @This(), i: usize) !IR.Func.Valtype {
+            return if (i < it.first.len) it.first[i]
+                else if (i < it.first.len+it.second.len)
+                    it.second[i-it.first.len]
+                else error.NotFound;
+        }
     },
-    stack: std.ArrayListUnmanaged(IR.Func.Valtype) = .{},
+    stack: std.ArrayListUnmanaged(StackVal) = .{},
+
+    const StackVal = union(enum) {
+        val: IR.Func.Valtype,
+        iN: usize, // offset of op
+        //TODO: float
+
+        inline fn eql(self: StackVal, other : StackVal) bool {
+            return std.meta.eql(self, other);
+        }
+        inline fn eqlV(self: StackVal, v: IR.Func.Valtype) bool {
+            return self.eql(.{ .val = v });
+        }
+        fn eqlOrCast(got: StackVal, expect: IR.Func.Valtype, self: *Codegen, comptime cast: bool) bool {
+            return switch (got) {
+                .val => |v| v == expect,
+                .iN => |at| if (cast) {
+                    const p = &self.bytes.items[at];
+                    return switch (expect) {
+                        .i64 => p.* == IR.opcode(.i64_const),
+                        .i32 => if (p.* == IR.opcode(.i32_const)) true
+                            else if (p.* == IR.opcode(.i64_const)) {
+                                p.* = IR.opcode(.i32_const);
+                                return true;
+                            } else false,
+                        else => false
+                    };
+                } else false,
+            };
+        }
+    };
 
     fn initFunc(ctx: *Ctx, param_types: []const IR.Func.Valtype, local_types: []const IR.Func.Valtype, ids: []const ?u.Txt) !Codegen {
         var self = Codegen{ .ctx = ctx,
@@ -573,7 +638,7 @@ const Codegen = struct {
 
     const Error = error{
         NotOp, Empty, NotDigit, Overflow, NotInt, OutOfMemory,
-        Signed, TypeMismatch, NotFound, NotPow2,
+        Signed, TypeMismatch, NotFound, NotPow2, NotValtype,
     };
     fn inst(codegen: *Codegen, expr: Expr) Error!void {
         codegen.ctx.at = expr;
@@ -678,9 +743,24 @@ const Codegen = struct {
                 .i64_reinterpret_f64 => comptime tNfrom(.i64, .f64),
                 .f32_reinterpret_i32 => comptime tNfrom(.f32, .i32),
                 .f64_reinterpret_i64 => comptime tNfrom(.f64, .i64),
+                .local_get => comptime Op{ 
+                    .narg = Op.Narg.id,
+                    .gen = struct { fn gen(self: *Codegen, func: Expr.Val.Func) !void {
+                        const i = if (func.id) |id|
+                            for (self.locals.ids) |f, j| {
+                                if (f != null and u.strEql(id, f.?))
+                                    break @truncate(u32, j);
+                            } else
+                                return error.NotFound
+                        else
+                            try u32_(func.args[0]);
 
-                        return self.push(typ);
-                    },
+                        const typ = try self.locals.get(i);
+
+                        try self.uleb(i);
+                        try self.push(typ);
+                    } }.gen
+                },
                 .nop => comptime Op{ },
                 .call => comptime Op{
                     .narg = Op.Narg.id,
@@ -692,7 +772,7 @@ const Codegen = struct {
                             } else return error.NotFound
                         else
                             try u32_(func.args[0]);
-
+                        
                         if (i > self.ctx.m.funcs.len) return error.NotFound;
                         const typ = self.ctx.m.funcs[i].type;
 
@@ -700,71 +780,85 @@ const Codegen = struct {
                         try self.uleb(i);
                         try self.pushs(typ.returns);
                     } }.gen
-                    },
+                },
                 .drop => comptime Op{
                     .gen = struct { fn gen(self: *Codegen, _: Expr.Val.Func) !void {
-                        return self.pop(null);
+                        _ = try self.pop();
                     } }.gen
                 },
+                .@"if" => comptime Op{
+                    .narg = .{ .sf = struct { fn sf(f: Expr.Val.Func) []const Expr {
+                        //TODO: label
+                        const i = nTypeuse(f.args);
+                        if (i >= f.args.len) return &[_]Expr{ };
 
-            //TODO: more custom ops
+                        //TODO: if else end syntax
+                        const has_else = f.args.len > i+1;
+                        const j = f.args.len-1-@boolToInt(has_else);
 
-            return error.NotOp;
-        };
+                        return f.args[i..j];
+                    } }.sf },
+                    .stack = .{ .pop = &[_]IR.Func.Valtype{ ibool } },
+                    .gen = struct { fn gen(self: *Codegen, func: Expr.Val.Func) !void {
+                        //TODO: label
+                        const typ = try self.ctx.typeuse(func.args);
+                        defer typ.deinit(self.ctx);
+                        if (typ.remain.len == 0) return error.Empty;
 
-        const take = switch (op) {
-            .i32_const => 1,
-            .i32_store => nMemarg(func.args),
-            .call => @boolToInt(func.id == null),
-            else => 0
-        };
-        if (take > func.args.len) return error.Empty;
+                        //TODO: if else end syntax
+                        const has_else = typ.remain.len > 1;
+                        const j = typ.remain.len-1-@boolToInt(has_else);
+                        const then = typ.remain[j];
+                        const else_ = if (has_else) typ.remain[j+1] else null;
+                        
+                        const blocktype_offset = self.bytes.items.len;
+                        try self.byte(std.wasm.block_empty);
 
-        for (func.args[take..]) |fold|
-            try self.inst(fold);
 
-        switch (op) {
-            .i32_const => {
-                const i = try i32_(func.args[0]);
+                        const pre_stack = try self.snapshot();
+                        defer self.release(pre_stack);
 
-                try self.opcode(op);
-                try self.ileb(i);
+                        //FIXME: need to know min stack
+                        try self.inst(then);
 
-                try self.push(IR.Func.Valtype.i32);
-            },
-            .i64_const => {
-                const i = try i64_(func.args[0]);
+                        if (typ.val.params.len > 0 or typ.val.returns.len > 0) { // typed
+                            std.debug.assert(pre_stack.len + typ.val.returns.len - typ.val.params.len == self.stack.items.len);
+                            try self.stackEndsWith(pre_stack, typ.val.params, false);
+                            try self.stackEndsWith(self.stack.items, typ.val.returns, true);
 
-                try self.opcode(op);
-                try self.ileb(i);
+                            // write blocktype_offset
+                            const blocktype_p = &self.bytes.items[blocktype_offset];
+                            if (typ.val.params.len == 0 and typ.val.returns.len <= 1) {
+                                blocktype_p.* = if (typ.val.returns.len > 0)
+                                    IR.Func.valtype(typ.val.returns[0]) else std.wasm.block_empty;
+                            } else {
+                                @panic("TODO: append to self.ctx.m.more_types");
+                                // blocktype_p.* = typ_id;
+                            }
+                        } else {
+                            @panic("TODO: type from self.stack.items - pre_stack");
+                        }
 
-                try self.push(IR.Func.Valtype.i64);
-            },
-            .i32_store => {
-                const arg = try memarg(func.args, 4);
+                        if (else_) |do| {
+                            try self.opcode(.@"else");
 
-                try self.pop(IR.Func.Valtype.i32);
-                try self.pop(IR.Func.Valtype.i32);
+                            const then_stack = try self.snapshot();
+                            defer self.release(then_stack);
 
-                try self.opcode(op);
-                try self.uleb(arg.align_);
-                try self.uleb(arg.offset);
-            },
-            .i64_store => {
-                const arg = try memarg(func.args, 8);
+                            try self.restore(pre_stack);
+                            try self.inst(do);
 
-                try self.pop(IR.Func.Valtype.i32);
-                try self.pop(IR.Func.Valtype.i64);
+                            try self.stackEql(self.stack.items, then_stack);
+                        }
 
-                try self.opcode(op);
-                try self.uleb(arg.align_);
-                try self.uleb(arg.offset);
-            },
+                        try self.opcode(.end);
+                    } }.gen
+                },
                 //TODO: remove else branch
                 else => {
                     std.log.warn("Unhandled {}. Ignoring it", .{ op });
                     return;
-                            }
+                }
             };
 
             // folded expr
@@ -778,7 +872,7 @@ const Codegen = struct {
                     };
                     if (n > operation.args.len) return error.Empty;
                     break :take operation.args[n..];
-                        }
+                }
             };
             for (folded) |fold|
                 try codegen.inst(fold);
@@ -798,29 +892,28 @@ const Codegen = struct {
                         try codegen.ileb(i);
 
                         return codegen.push(typ);
-            },
+                    },
                     .i64 => if (i64_(kv(head)) catch null) |i| {
                         try codegen.opcode(IR.Opcode.i64_const);
                         try codegen.ileb(i);
 
                         return codegen.push(typ);
-            },
-            //TODO: remove else branch
+                    },
+                    //TODO: remove else branch
                     else => @panic("WIP")
                 };
             }
 
             //TODO: more custom ops
 
-            std.log.err("Unknown Op {s}", .{ operation.name });
             return error.NotOp;
         }
     }
     fn nameToOp(name: u.Txt) ?IR.Opcode {
         var buf: [32]u8 = undefined;
         const opname = if (std.mem.indexOfScalar(u8, name, '.')) |i| blk: {
-        const opname = buf[0..name.len];
-        std.mem.copy(u8, opname, name);
+            const opname = buf[0..name.len];
+            std.mem.copy(u8, opname, name);
             opname[i] = '_';
             break :blk opname;
         } else name;
@@ -947,7 +1040,6 @@ const Codegen = struct {
     }
 
     fn end(self: *Codegen, results: []const IR.Func.Valtype) !void {
-        if (self.bytes.items.len > 0 and self.bytes.items[self.bytes.items.len-1] == IR.opcode(IR.Opcode.end)) return;
         try self.pops(results);
         try self.opcode(IR.Opcode.end);
     }
@@ -977,21 +1069,93 @@ const Codegen = struct {
         try std.leb.writeILEB128(self.writer(), v);
     }
 
+    fn stackEqlv(self: *Codegen, st: []const StackVal, typs: []const IR.Func.Valtype, comptime cast: bool) !void {
+        self.ctx.err = if (st.len > typs.len)
+            ErrData{ .typeMismatch = .{
+                .expect = null,
+                .got = st[typs.len],
+                .index = typs.len,
+            } }
+        else if (st.len < typs.len)
+            ErrData{ .typeMismatch = .{
+                .expect = .{ .val = typs[st.len] },
+                .got = null,
+                .index = st.len,
+            } }
+        else for (st) |got, i| {
+            if (!got.eqlOrCast(typs[i], self, cast))
+                break ErrData{ .typeMismatch = .{
+                    .expect = .{ .val = typs[i] },
+                    .got = got,
+                    .index = i,
+                } };
+        } else return;
+        return error.TypeMismatch;
+    }
+    fn stackEql(self: *Codegen, st: []const StackVal, typs: []const StackVal) !void {
+        self.ctx.err = if (st.len > typs.len)
+            ErrData{ .typeMismatch = .{
+                .expect = null,
+                .got = st[typs.len],
+                .index = typs.len,
+            } }
+        else if (st.len < typs.len)
+            ErrData{ .typeMismatch = .{
+                .expect = typs[st.len],
+                .got = null,
+                .index = st.len,
+            } }
+        else for (st) |got, i| {
+            if (!typs[i].eql(got))
+                break ErrData{ .typeMismatch = .{
+                    .expect = typs[i],
+                    .got = got,
+                    .index = i,
+                } };
+        } else return;
+        return error.TypeMismatch;
+    }
+    fn stackEndsWith(self: *Codegen, st: []const StackVal, typs: []const IR.Func.Valtype, comptime cast: bool) !void {
+        if (st.len < typs.len) {
+            self.ctx.err = .{ .typeMismatch = .{
+                .expect = .{ .val = typs[st.len] },
+                .got = null,
+                .index = st.len,
+            } };
+            return error.TypeMismatch;
+        }
+        return self.stackEqlv(st[st.len-typs.len..], typs, cast);
+    }
+
     fn push(self: *Codegen, typ: IR.Func.Valtype) !void {
-        try self.stack.append(self.ctx.gpa, typ);
+        try self.stack.append(self.ctx.gpa, .{ .val = typ });
     }
     fn pushs(self: *Codegen, typs: []const IR.Func.Valtype) !void {
-        try self.stack.appendSlice(self.ctx.gpa, typs);
+        try self.stack.ensureUnusedCapacity(self.ctx.gpa, typs.len);
+        for (typs) |typ|
+            self.stack.appendAssumeCapacity(.{ .val = typ });
     }
-    fn pop(self: *Codegen, typ: ?IR.Func.Valtype) !void {
-        if (self.stack.items.len == 0) return error.TypeMismatch;
-        const o = self.stack.pop();
-        if (typ) |t| if (t != o) return error.TypeMismatch;
+    fn pop(self: *Codegen) !StackVal {
+        if (self.stack.items.len == 0) {
+            self.ctx.err = .none;
+            return error.TypeMismatch;
+        }
+        return self.stack.pop();
     }
     fn pops(self: *Codegen, typs: []const IR.Func.Valtype) !void {
-        if (self.stack.items.len < typs.len or !std.mem.eql(IR.Func.Valtype, typs,
-            self.stack.items[self.stack.items.len-typs.len..])) return error.TypeMismatch;
+        try self.stackEndsWith(self.stack.items, typs, true);
         self.stack.items.len -= typs.len;
+    }
+
+    fn snapshot(self: *const Codegen) ![]const StackVal {
+        return self.ctx.gpa.dupe(StackVal, self.stack.items);
+    }
+    fn restore(self: *Codegen, snap: []const StackVal) !void {
+        try self.stack.resize(self.ctx.gpa, snap.len);
+        std.mem.copy(StackVal, self.stack.items, snap);
+    }
+    inline fn release(self: Codegen, snap: []const StackVal) void {
+        self.ctx.gpa.free(snap);
     }
 };
 

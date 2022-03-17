@@ -9,7 +9,7 @@ comment
 ;)
 memory(export("memory") 1)
 
-data(i32.const(16) "Hello, W0rld!\n")
+data((16i32) "Hello, W0rld!\n")
 
 func $main export("_start")
   i32.store 8i32 16i32
