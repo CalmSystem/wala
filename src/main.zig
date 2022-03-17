@@ -103,8 +103,9 @@ inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) voi
 inline fn aLoader() Loader {
     return .{
         .allocator = top_alloc,
-        .errAt = struct { fn do(err: File.ErrPoint) void {
+        .errAt = struct { fn do(err: Loader.ErrPoint, data: Loader.ErrData) void {
             errPrint("{}\n", .{ err });
+            if (data) |d| errPrint("{}\n", .{ d });
         } }.do,
     };
 }

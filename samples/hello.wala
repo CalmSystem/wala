@@ -9,14 +9,14 @@ comment
 ;)
 memory(export("memory") 1)
 
-data((16i32) "Hello, W0rld!\n")
+data((16) "Hello, W0rld!\n")
 
 func $main export("_start")
-  i32.store 8i32 16i32
-  i32.store offset=4 8i32 14i32
+  i32.store 8 16
+  i32.store offset=4 8 14
   call $fd_write
-    1i32 ;; fd: stdout
-    8i32 ;; const ciovec*
-    1i32 ;; len of ciovec
-    4i32 ;; written*
+    1 ;; fd: stdout
+    8 ;; const ciovec*
+    1 ;; len of ciovec
+    4 ;; written*
   drop

@@ -7,9 +7,11 @@ const Wasm = @import("Wasm.zig");
 
 allocator: std.mem.Allocator,
 trace: std.ArrayListUnmanaged(u.Txt) = .{},
-errAt: fn(point: File.ErrPoint) void,
+errAt: fn(point: ErrPoint, data: ErrData) void,
 
 const Self = @This();
+pub const ErrPoint = File.ErrPoint;
+pub const ErrData = Wat.ErrData;
 
 pub fn load(self: *Self, entry: u.Txt) !IR.Module {
     //TODO: cwd from trace
@@ -24,12 +26,12 @@ pub fn load(self: *Self, entry: u.Txt) !IR.Module {
                     if (err.at != null and err.at.?.at != null) self.errAt(.{
                         .kind = err.kind, .file = &text,
                         .at = err.at.?.at.?.offset
-                    });
+                    }, err.data);
                     return err.kind;
                 }
             },
             .err => |err| {
-                self.errAt(err);
+                self.errAt(err, null);
                 return err.kind;
             }
         },

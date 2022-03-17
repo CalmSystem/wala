@@ -16,7 +16,7 @@ I: struct {
 } = .{},
 /// Parsing pointer
 at: ?Expr = null,
-err: ErrData = .none,
+err: ErrData = null,
 
 const Ctx = @This();
 
@@ -30,19 +30,32 @@ const Indices = struct {
     }
 };
 
-const ErrData = union(enum) {
-    none: void,
+pub const ErrData = ?union(enum) {
     typeMismatch: struct {
-        expect: ?Codegen.StackVal,
-        got: ?Codegen.StackVal,
+        expect: ?Codegen.Stack,
+        got: ?Codegen.Stack,
         index: ?usize = null,
     },
+
+    pub fn format(
+        self: @This(),
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self) {
+            .typeMismatch => |m| {
+                try writer.print("Expected {} got {}", .{ m.expect, m.got });
+                if (m.index) |i| try writer.print(" at index {}", .{ i });
+            }
+        }
+    }
 };
 const Result = union(enum) {
     ok: IR.Module,
     err: struct {
         kind: anyerror,
-        data: ErrData = .{ .none = void },
+        data: ErrData = null,
         at: ?Expr = null,
     },
 };
@@ -581,35 +594,105 @@ const Codegen = struct {
                 else error.NotFound;
         }
     },
-    stack: std.ArrayListUnmanaged(StackVal) = .{},
+    stack: std.ArrayListUnmanaged(Stack) = .{},
 
-    const StackVal = union(enum) {
+    const Stack = union(enum) {
         val: IR.Func.Valtype,
-        iN: usize, // offset of op
-        //TODO: float
+        /// can be down casted to .i64
+        i32: usize, // offset of .i32_const
+        //TODO: f32
 
-        inline fn eql(self: StackVal, other : StackVal) bool {
-            return std.meta.eql(self, other);
+        pub fn format(
+            self: Stack,
+            comptime _: []const u8,
+            _: std.fmt.FormatOptions,
+            w: anytype,
+        ) !void {
+            return w.writeAll(switch (self) {
+                .val => |v| @tagName(v),
+                .i32 => "i32+"
+            });
         }
-        inline fn eqlV(self: StackVal, v: IR.Func.Valtype) bool {
+
+        inline fn eql(self: Stack, other: Stack) bool {
+            return std.meta.eql(self, other)
+                or (self == .i32 and other.eqlV(.i32))
+                or (other == .i32 and self.eqlV(.i32));
+        }
+        inline fn eqlV(self: Stack, v: IR.Func.Valtype) bool {
             return self.eql(.{ .val = v });
         }
-        fn eqlOrCast(got: StackVal, expect: IR.Func.Valtype, self: *Codegen, comptime cast: bool) bool {
-            return switch (got) {
+        fn eqlOrCast(got: *Stack, expect: IR.Func.Valtype, self: *Codegen) bool {
+            return switch (got.*) {
                 .val => |v| v == expect,
-                .iN => |at| if (cast) {
-                    const p = &self.bytes.items[at];
-                    return switch (expect) {
-                        .i64 => p.* == IR.opcode(.i64_const),
-                        .i32 => if (p.* == IR.opcode(.i32_const)) true
-                            else if (p.* == IR.opcode(.i64_const)) {
-                                p.* = IR.opcode(.i32_const);
-                                return true;
-                            } else false,
-                        else => false
-                    };
-                } else false,
+                .i32 => |at| switch (expect) {
+                    .i32 => true,
+                    .i64 => {
+                        self.bytes.items[at] = IR.opcode(.i64_const);
+                        got.* = .{ .val = .i64 };
+                        return true;
+                    },
+                    else => false
+                },
             };
+        }
+        inline fn of(v: IR.Func.Valtype) Stack {
+            return .{ .val = v };
+        }
+
+        fn snapshot(self: *const Codegen) ![]const Stack {
+            return self.ctx.gpa.dupe(Stack, self.stack.items);
+        }
+        fn restore(self: *Codegen, snap: []const Stack) !void {
+            try self.stack.resize(self.ctx.gpa, snap.len);
+            std.mem.copy(Stack, self.stack.items, snap);
+        }
+        inline fn release(self: *const Codegen, snap: []const Stack) void {
+            self.ctx.gpa.free(snap);
+        }
+
+        inline fn err(self: *Codegen, expect: ?Stack, got: ?Stack, index: ?usize) !void {
+            self.ctx.err = .{ .typeMismatch = .{
+                .expect = expect, .got = got, .index = index
+            } };
+            return error.TypeMismatch;
+        }
+        fn eqlOrCastSlice(self: *Codegen, offset: usize, typs: []const IR.Func.Valtype) !void {
+            std.debug.assert(self.stack.items.len >= offset);
+            const st = self.stack.items[offset..];
+            if (st.len > typs.len) return err(self, null, st[typs.len], typs.len);
+            if (st.len < typs.len) return err(self, of(typs[st.len]), null, st.len);
+
+            for (st) |*got, i|
+                if (!got.eqlOrCast(typs[i], self))
+                    return err(self, of(typs[i]), got.*, i);
+        }
+        fn eqlSliceV(self: *Codegen, st: []const Stack, typs: []const IR.Func.Valtype) !void {
+            if (st.len > typs.len) return err(self, null, st[typs.len], typs.len);
+            if (st.len < typs.len) return err(self, of(typs[st.len]), null, st.len);
+
+            for (st) |got, i|
+                if (!got.eqlV(typs[i]))
+                    return err(self, of(typs[i]), got, i);
+        }
+        fn eqlSlice(self: *Codegen, st: []const Stack, typs: []const Stack) !void {
+            if (st.len > typs.len) return err(self, null, st[typs.len], typs.len);
+            if (st.len < typs.len) return err(self, typs[st.len], null, st.len);
+
+            for (st) |got, i|
+                if (!typs[i].eql(got))
+                    return err(self, typs[i], got, i);
+        }
+        inline fn fits(self: *Codegen, st: []const Stack, typs: []const IR.Func.Valtype) !void {
+            if (st.len < typs.len) return err(self, of(typs[st.len]), null, st.len);
+        }
+        fn endsWith(self: *Codegen, st: []const Stack, typs: []const IR.Func.Valtype) !void {
+            try fits(self, st, typs);
+            return eqlSliceV(self, st[st.len-typs.len..], typs);
+        }
+        fn endsWithOrCast(self: *Codegen, typs: []const IR.Func.Valtype) !void {
+            try fits(self, self.stack.items, typs);
+            return eqlOrCastSlice(self, self.stack.items.len-typs.len, typs);
         }
     };
 
@@ -814,17 +897,16 @@ const Codegen = struct {
                         const blocktype_offset = self.bytes.items.len;
                         try self.byte(std.wasm.block_empty);
 
-
-                        const pre_stack = try self.snapshot();
-                        defer self.release(pre_stack);
+                        const pre_stack = try Stack.snapshot(self);
+                        defer Stack.release(self, pre_stack);
 
                         //FIXME: need to know min stack
                         try self.inst(then);
 
                         if (typ.val.params.len > 0 or typ.val.returns.len > 0) { // typed
                             std.debug.assert(pre_stack.len + typ.val.returns.len - typ.val.params.len == self.stack.items.len);
-                            try self.stackEndsWith(pre_stack, typ.val.params, false);
-                            try self.stackEndsWith(self.stack.items, typ.val.returns, true);
+                            try Stack.endsWith(self, pre_stack, typ.val.params);
+                            try Stack.endsWithOrCast(self, typ.val.returns);
 
                             // write blocktype_offset
                             const blocktype_p = &self.bytes.items[blocktype_offset];
@@ -842,13 +924,13 @@ const Codegen = struct {
                         if (else_) |do| {
                             try self.opcode(.@"else");
 
-                            const then_stack = try self.snapshot();
-                            defer self.release(then_stack);
+                            const then_stack = try Stack.snapshot(self);
+                            defer Stack.release(self, then_stack);
 
-                            try self.restore(pre_stack);
+                            try Stack.restore(self, pre_stack);
                             try self.inst(do);
 
-                            try self.stackEql(self.stack.items, then_stack);
+                            try Stack.eqlSlice(self, self.stack.items, then_stack);
                         }
 
                         try self.opcode(.end);
@@ -888,13 +970,13 @@ const Codegen = struct {
                 const tail = operation.name[operation.name.len-3..];
                 if (std.meta.stringToEnum(IR.Func.Valtype, tail)) |typ| switch (typ) {
                     .i32 => if (i32_(kv(head)) catch null) |i| {
-                        try codegen.opcode(IR.Opcode.i32_const);
+                        try codegen.opcode(.i32_const);
                         try codegen.ileb(i);
 
                         return codegen.push(typ);
                     },
                     .i64 => if (i64_(kv(head)) catch null) |i| {
-                        try codegen.opcode(IR.Opcode.i64_const);
+                        try codegen.opcode(.i64_const);
                         try codegen.ileb(i);
 
                         return codegen.push(typ);
@@ -902,6 +984,19 @@ const Codegen = struct {
                     //TODO: remove else branch
                     else => @panic("WIP")
                 };
+            }
+            //TODO: if (operation.name[-1] == 'f') Float litteral const
+            // Int litteral const
+            if (i64_(kv(operation.name)) catch null) |i| {
+                if (i < std.math.maxInt(i32) and i > std.math.minInt(i32)) {
+                    const at = codegen.bytes.items.len;
+                    try codegen.opcode(.i32_const);
+                    try codegen.stack.append(codegen.ctx.gpa, .{ .i32 = at });
+                } else {
+                    try codegen.opcode(.i64_const);
+                    try codegen.push(.i64);
+                }
+                return codegen.ileb(i);
             }
 
             //TODO: more custom ops
@@ -1041,7 +1136,7 @@ const Codegen = struct {
 
     fn end(self: *Codegen, results: []const IR.Func.Valtype) !void {
         try self.pops(results);
-        try self.opcode(IR.Opcode.end);
+        try self.opcode(.end);
     }
     fn dupe(self: Codegen, allocator: std.mem.Allocator) !IR.Code {
         return IR.Code{
@@ -1069,64 +1164,6 @@ const Codegen = struct {
         try std.leb.writeILEB128(self.writer(), v);
     }
 
-    fn stackEqlv(self: *Codegen, st: []const StackVal, typs: []const IR.Func.Valtype, comptime cast: bool) !void {
-        self.ctx.err = if (st.len > typs.len)
-            ErrData{ .typeMismatch = .{
-                .expect = null,
-                .got = st[typs.len],
-                .index = typs.len,
-            } }
-        else if (st.len < typs.len)
-            ErrData{ .typeMismatch = .{
-                .expect = .{ .val = typs[st.len] },
-                .got = null,
-                .index = st.len,
-            } }
-        else for (st) |got, i| {
-            if (!got.eqlOrCast(typs[i], self, cast))
-                break ErrData{ .typeMismatch = .{
-                    .expect = .{ .val = typs[i] },
-                    .got = got,
-                    .index = i,
-                } };
-        } else return;
-        return error.TypeMismatch;
-    }
-    fn stackEql(self: *Codegen, st: []const StackVal, typs: []const StackVal) !void {
-        self.ctx.err = if (st.len > typs.len)
-            ErrData{ .typeMismatch = .{
-                .expect = null,
-                .got = st[typs.len],
-                .index = typs.len,
-            } }
-        else if (st.len < typs.len)
-            ErrData{ .typeMismatch = .{
-                .expect = typs[st.len],
-                .got = null,
-                .index = st.len,
-            } }
-        else for (st) |got, i| {
-            if (!typs[i].eql(got))
-                break ErrData{ .typeMismatch = .{
-                    .expect = typs[i],
-                    .got = got,
-                    .index = i,
-                } };
-        } else return;
-        return error.TypeMismatch;
-    }
-    fn stackEndsWith(self: *Codegen, st: []const StackVal, typs: []const IR.Func.Valtype, comptime cast: bool) !void {
-        if (st.len < typs.len) {
-            self.ctx.err = .{ .typeMismatch = .{
-                .expect = .{ .val = typs[st.len] },
-                .got = null,
-                .index = st.len,
-            } };
-            return error.TypeMismatch;
-        }
-        return self.stackEqlv(st[st.len-typs.len..], typs, cast);
-    }
-
     fn push(self: *Codegen, typ: IR.Func.Valtype) !void {
         try self.stack.append(self.ctx.gpa, .{ .val = typ });
     }
@@ -1135,27 +1172,14 @@ const Codegen = struct {
         for (typs) |typ|
             self.stack.appendAssumeCapacity(.{ .val = typ });
     }
-    fn pop(self: *Codegen) !StackVal {
-        if (self.stack.items.len == 0) {
-            self.ctx.err = .none;
+    fn pop(self: *Codegen) !Stack {
+        if (self.stack.items.len == 0)
             return error.TypeMismatch;
-        }
         return self.stack.pop();
     }
     fn pops(self: *Codegen, typs: []const IR.Func.Valtype) !void {
-        try self.stackEndsWith(self.stack.items, typs, true);
+        try Stack.endsWithOrCast(self, typs);
         self.stack.items.len -= typs.len;
-    }
-
-    fn snapshot(self: *const Codegen) ![]const StackVal {
-        return self.ctx.gpa.dupe(StackVal, self.stack.items);
-    }
-    fn restore(self: *Codegen, snap: []const StackVal) !void {
-        try self.stack.resize(self.ctx.gpa, snap.len);
-        std.mem.copy(StackVal, self.stack.items, snap);
-    }
-    inline fn release(self: Codegen, snap: []const StackVal) void {
-        self.ctx.gpa.free(snap);
     }
 };
 
