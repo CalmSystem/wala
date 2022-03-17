@@ -141,7 +141,7 @@ inline fn buildIndices(ctx: *Ctx, I: *Indices, expr: Expr, comptime importParent
             try ctx.buildIndices(I, func.args[2], true);
         },
         //TODO: remove else branch
-        else => std.log.warn("Unhandled section {s} index", .{ func.name })
+        else => std.log.warn("Unhandled section {s} index. Ignoring it", .{ func.name })
     }
 }
 
@@ -162,7 +162,7 @@ fn loadDefinition(ctx: *Ctx, expr: Expr) !void {
         //elem
         .data => try ctx.loadData(func.args),
         //TODO: remove else branch
-        else => std.log.warn("Unhandled section {} {}", .{ section, func })
+        else => std.log.warn("Unhandled section {} {}. Ignoring it", .{ section, func })
     }
 }
 
@@ -575,32 +575,137 @@ const Codegen = struct {
         NotOp, Empty, NotDigit, Overflow, NotInt, OutOfMemory,
         Signed, TypeMismatch, NotFound, NotPow2,
     };
-    fn inst(self: *Codegen, expr: Expr) Error!void {
-        self.ctx.at = expr;
-        const func = expr.val.asFunc() orelse Expr.Val.Func{
+    fn inst(codegen: *Codegen, expr: Expr) Error!void {
+        codegen.ctx.at = expr;
+        const operation = expr.val.asFunc() orelse Expr.Val.Func{
             .name = expr.val.asKeyword() orelse return error.NotOp };
 
-        const op = nameToOp(func.name) orelse {
-            if (func.name.len > 3) { // Short const
-                const head = func.name[0..func.name.len-3];
-                const tail = func.name[func.name.len-3..];
-                if (std.meta.stringToEnum(IR.Func.Valtype, tail)) |typ| switch (typ) {
-                    .i32 => if (i32_(kv(head)) catch null) |i| {
-                        try self.opcode(IR.Opcode.i32_const);
-                        try self.ileb(i);
+        if (nameToOp(operation.name)) |op| {
+            const do = switch (op) {
+                .i32_const => comptime iNconst(.i32, 32),
+                .i64_const => comptime iNconst(.i64, 64),
+                //fN_const
+                .i32_store => comptime tNstore(.i32, 4),
+                .i64_store => comptime tNstore(.i64, 8),
+                .f32_store => comptime tNstore(.f32, 4),
+                .f64_store => comptime tNstore(.f64, 8),
+                .i32_eqz => comptime tNtest(.i32),
+                .i32_eq, .i32_ne,
+                .i32_lt_s, .i32_lt_u,
+                .i32_gt_s, .i32_gt_u,
+                .i32_le_s, .i32_le_u,
+                .i32_ge_s, .i32_ge_u
+                    => comptime tNcompare(.i32),
+                .i64_eqz => comptime tNtest(.i64),
+                .i64_eq, .i64_ne,
+                .i64_lt_s, .i64_lt_u,
+                .i64_gt_s, .i64_gt_u,
+                .i64_le_s, .i64_le_u,
+                .i64_ge_s, .i64_ge_u
+                    => comptime tNcompare(.i64),
+                .f32_eq, .f32_ne,
+                .f32_lt, .f32_gt,
+                .f32_le, .f32_ge
+                    => comptime tNcompare(.f32),
+                .f64_eq, .f64_ne,
+                .f64_lt, .f64_gt,
+                .f64_le, .f64_ge
+                    => comptime tNcompare(.f64),
+                .i32_clz, .i32_ctz, .i32_popcnt,
+                .i32_extend8_s, .i32_extend16_s
+                    => comptime tNunary(.i32),
+                .i32_add, .i32_sub,
+                .i32_mul,
+                .i32_div_s, .i32_div_u,
+                .i32_rem_s, .i32_rem_u,
+                .i32_and, .i32_or, .i32_xor,
+                .i32_shl, .i32_shr_s, .i32_shr_u,
+                .i32_rotl, .i32_rotr
+                    => comptime tNbinary(.i32),
+                .i64_clz, .i64_ctz, .i64_popcnt,
+                .i64_extend8_s, .i64_extend16_s, .i64_extend32_s
+                    => comptime tNunary(.i64),
+                .i64_add, .i64_sub,
+                .i64_mul,
+                .i64_div_s, .i64_div_u,
+                .i64_rem_s, .i64_rem_u,
+                .i64_and, .i64_or, .i64_xor,
+                .i64_shl, .i64_shr_s, .i64_shr_u,
+                .i64_rotl, .i64_rotr
+                    => comptime tNbinary(.i64),
+                .f32_abs, .f32_neg,
+                .f32_ceil, .f32_floor,
+                .f32_trunc, .f32_nearest,
+                .f32_sqrt
+                    => comptime tNunary(.f32),
+                .f32_add, .f32_sub,
+                .f32_mul, .f32_div,
+                .f32_min, .f32_max,
+                .f32_copysign
+                    => comptime tNbinary(.f32),
+                .f64_abs, .f64_neg,
+                .f64_ceil, .f64_floor,
+                .f64_trunc, .f64_nearest,
+                .f64_sqrt
+                    => comptime tNunary(.f64),
+                .f64_add, .f64_sub,
+                .f64_mul, .f64_div,
+                .f64_min, .f64_max,
+                .f64_copysign
+                    => comptime tNbinary(.f64),
+                .i32_wrap_i64 => comptime tNfrom(.i32, .i64),
+                .i32_trunc_f32_s, .i32_trunc_f32_u
+                    => comptime tNfrom(.i32, .f32),
+                .i32_trunc_f64_s, .i32_trunc_f64_u
+                    => comptime tNfrom(.i32, .f64),
+                .i64_extend_i32_s, .i64_extend_i32_u
+                    => comptime tNfrom(.i64, .i32),
+                .i64_trunc_f32_s, .i64_trunc_f32_u
+                    => comptime tNfrom(.i64, .f32),
+                .i64_trunc_f64_s, .i64_trunc_f64_u
+                    => comptime tNfrom(.i64, .f64),
+                .f32_convert_i32_s, .f32_convert_i32_u
+                    => comptime tNfrom(.f32, .i32),
+                .f32_convert_i64_s, .f32_convert_i64_u
+                    => comptime tNfrom(.f32, .i64),
+                .f32_demote_f64 => comptime tNfrom(.f32, .f64),
+                .f64_convert_i32_s, .f64_convert_i32_u
+                    => comptime tNfrom(.f64, .i32),
+                .f64_convert_i64_s, .f64_convert_i64_u
+                    => comptime tNfrom(.f64, .i64),
+                .f64_promote_f32 => comptime tNfrom(.f64, .f32),
+                .i32_reinterpret_f32 => comptime tNfrom(.i32, .f32),
+                .i64_reinterpret_f64 => comptime tNfrom(.i64, .f64),
+                .f32_reinterpret_i32 => comptime tNfrom(.f32, .i32),
+                .f64_reinterpret_i64 => comptime tNfrom(.f64, .i64),
 
                         return self.push(typ);
                     },
-                    .i64 => if (i64_(kv(head)) catch null) |i| {
-                        try self.opcode(IR.Opcode.i64_const);
-                        try self.ileb(i);
+                .nop => comptime Op{ },
+                .call => comptime Op{
+                    .narg = Op.Narg.id,
+                    .gen = struct { fn gen(self: *Codegen, func: Expr.Val.Func) !void {
+                        const i = if (func.id) |id|
+                            for (self.ctx.m.funcs) |f, j| {
+                                if (f.id != null and u.strEql(id, f.id.?))
+                                    break @truncate(u32, j);
+                            } else return error.NotFound
+                        else
+                            try u32_(func.args[0]);
 
-                        return self.push(typ);
+                        if (i > self.ctx.m.funcs.len) return error.NotFound;
+                        const typ = self.ctx.m.funcs[i].type;
+
+                        try self.pops(typ.params);
+                        try self.uleb(i);
+                        try self.pushs(typ.returns);
+                    } }.gen
                     },
-                    //TODO: remove else branch
-                    else => @panic("WIP")
-                };
-            }
+                .drop => comptime Op{
+                    .gen = struct { fn gen(self: *Codegen, _: Expr.Val.Func) !void {
+                        return self.pop(null);
+                    } }.gen
+                },
 
             //TODO: more custom ops
 
@@ -655,50 +760,160 @@ const Codegen = struct {
                 try self.uleb(arg.align_);
                 try self.uleb(arg.offset);
             },
-            .call => {
-                var i: u32 = undefined;
-                var typ: IR.Func.Type = undefined;
-                if (func.id) |id| {
-                    for (self.ctx.m.funcs) |f, j| {
-                        if (f.id) |id2| {
-                            if (u.strEql(id, id2)) {
-                                typ = f.type;
-                                i = @truncate(u32, j);
-                                break;
+                //TODO: remove else branch
+                else => {
+                    std.log.warn("Unhandled {}. Ignoring it", .{ op });
+                    return;
                             }
+            };
+
+            // folded expr
+            const folded = switch (do.narg) {
+                .sf => |f| f(operation),
+                else => take: {
+                    const n = switch (do.narg) {
+                        .n => |n| n,
+                        .nf => |f| f(operation),
+                        .sf => unreachable
+                    };
+                    if (n > operation.args.len) return error.Empty;
+                    break :take operation.args[n..];
                         }
-                    } else
-                        return error.NotFound;
-                } else {
-                    i = try u32_(func.args[0]);
-                    if (i > self.ctx.m.funcs.len) return error.NotFound;
-                    typ = self.ctx.m.funcs[i].type;
-                }
+            };
+            for (folded) |fold|
+                try codegen.inst(fold);
 
-                try self.pops(typ.params);
+            try codegen.pops(do.stack.pop);
+            try codegen.opcode(op);
+            try do.gen(codegen, operation);
+            try codegen.pushs(do.stack.push);
 
-                try self.opcode(op);
-                try self.uleb(i);
+        } else {
+            if (operation.name.len > 3) { // Short const
+                const head = operation.name[0..operation.name.len-3];
+                const tail = operation.name[operation.name.len-3..];
+                if (std.meta.stringToEnum(IR.Func.Valtype, tail)) |typ| switch (typ) {
+                    .i32 => if (i32_(kv(head)) catch null) |i| {
+                        try codegen.opcode(IR.Opcode.i32_const);
+                        try codegen.ileb(i);
 
-                try self.pushs(typ.returns);
+                        return codegen.push(typ);
             },
-            .drop => {
-                try self.pop(null);
+                    .i64 => if (i64_(kv(head)) catch null) |i| {
+                        try codegen.opcode(IR.Opcode.i64_const);
+                        try codegen.ileb(i);
 
-                try self.opcode(op);
+                        return codegen.push(typ);
             },
             //TODO: remove else branch
-            else => std.log.warn("Unhandled Op {}", .{ op })
+                    else => @panic("WIP")
+                };
+            }
+
+            //TODO: more custom ops
+
+            std.log.err("Unknown Op {s}", .{ operation.name });
+            return error.NotOp;
         }
     }
     fn nameToOp(name: u.Txt) ?IR.Opcode {
         var buf: [32]u8 = undefined;
-        if (name.len > buf.len) return null;
+        const opname = if (std.mem.indexOfScalar(u8, name, '.')) |i| blk: {
         const opname = buf[0..name.len];
         std.mem.copy(u8, opname, name);
-        std.mem.replaceScalar(u8, opname, '.', '_');
+            opname[i] = '_';
+            break :blk opname;
+        } else name;
         return std.meta.stringToEnum(IR.Opcode, opname);
     }
+
+    const Op = struct {
+        narg: Narg = .{ .n = 0 },
+        stack: struct {
+            pop: []const IR.Func.Valtype = &[_]IR.Func.Valtype{},
+            push: []const IR.Func.Valtype = &[_]IR.Func.Valtype{},
+        } = .{},
+        gen: fn(self: *Codegen, func: Expr.Val.Func) Error!void = genNop, 
+    
+        const Narg = union(enum) {
+            n: usize,
+            nf: fn (func: Expr.Val.Func) usize,
+            sf: fn (func: Expr.Val.Func) []const Expr,
+
+            const one = @This(){ .n = 1 };
+            const id = @This(){
+                .nf = struct { fn nf(f: Expr.Val.Func) usize {
+                    return @boolToInt(f.id == null);
+                } }.nf
+            };
+            const all = @This(){
+                .nf = struct { fn nf(f: Expr.Val.Func) usize {
+                    return f.args.len;
+                } }.nf
+            };
+        };
+        const genNop = struct { fn nop(_: *Codegen, _: Expr.Val.Func) !void { } }.nop;
+    };
+    inline fn iNconst(val: IR.Func.Valtype, comptime N: u16) Op {
+        return .{
+            .narg = Op.Narg.one,
+            .stack = .{
+                .push = &[_]IR.Func.Valtype{ val }
+            },
+            .gen = struct { fn Gen(comptime M: u16) type {
+                return struct { fn gen(self: *Codegen, func: Expr.Val.Func) !void {
+                    return self.ileb(try iN(func.args[0], M));
+                } };
+            } }.Gen(N-1).gen
+        };
+    }
+    inline fn tNstore(val: IR.Func.Valtype, comptime align_: u32) Op {
+        return .{
+            .narg = .{ .nf = nMemarg },
+            .stack = .{
+                .pop = &[_]IR.Func.Valtype{ .i32, val },
+            },
+            .gen = struct { fn Gen(comptime align__: u32) type {
+                return struct{ fn gen(self: *Codegen, func: Expr.Val.Func) !void {
+                    const arg = try memarg(func.args, align__);
+                    try self.uleb(arg.align_);
+                    try self.uleb(arg.offset);
+                } };
+            } }.Gen(align_).gen,
+        };
+    }
+    const ibool = .i32;
+    inline fn tNtest(val: IR.Func.Valtype) Op {
+        return .{ .stack = .{
+            .pop = &[_]IR.Func.Valtype{ val },
+            .push = &[_]IR.Func.Valtype{ ibool },
+        } };
+    }
+    inline fn tNcompare(val: IR.Func.Valtype) Op {
+        return .{ .stack = .{
+            .pop = &[_]IR.Func.Valtype{ val, val },
+            .push = &[_]IR.Func.Valtype{ ibool },
+        } };
+    }
+    inline fn tNunary(val: IR.Func.Valtype) Op {
+        return .{ .stack = .{
+            .pop = &[_]IR.Func.Valtype{ val },
+            .push = &[_]IR.Func.Valtype{ val },
+        } };
+    }
+    inline fn tNbinary(val: IR.Func.Valtype) Op {
+        return .{ .stack = .{
+            .pop = &[_]IR.Func.Valtype{ val, val },
+            .push = &[_]IR.Func.Valtype{ val },
+        } };
+    }
+    inline fn tNfrom(to: IR.Func.Valtype, from: IR.Func.Valtype) Op {
+        return .{ .stack = .{
+            .pop = &[_]IR.Func.Valtype{ from },
+            .push = &[_]IR.Func.Valtype{ to },
+        } };
+    }
+
     fn kvarg(exprs: []const Expr, comptime key: u.Txt) ?u.Txt {
         if (exprs.len > 0) {
             if (exprs[0].val.asKeyword()) |k| {
@@ -708,7 +923,8 @@ const Codegen = struct {
         }
         return null;
     }
-    fn nMemarg(exprs: []const Expr) usize {
+    fn nMemarg(func: Expr.Val.Func) usize {
+        const exprs = func.args;
         var i: usize = 0;
         if (kvarg(exprs, "offset") != null)
             i += 1;
