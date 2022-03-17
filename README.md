@@ -93,6 +93,11 @@ Like function calls
 - `(i32.add 35 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
 - `(i64.add 35 7)` -> `(i64.add (i64.const 35) (i64.const 7))`
 
+#### Common Operators
+
+- `(+ 35i32 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
+- `(+ 35i64 7)` -> `(i64.add (i64.const 35) (i64.const 7))`
+
 ### Planned
 
 #### Short var
@@ -103,11 +108,6 @@ Like function calls
 #### Result Type Deduction
 
 No need to specify blocks and function result types
-
-#### Common Operators
-
-- `(+ 35i32 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
-- `(+ 35i64 7)` -> `(i64.add (i64.const 35) (i64.const 7))`
 
 #### Name expansion
 

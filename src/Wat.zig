@@ -965,6 +965,88 @@ const Codegen = struct {
             try codegen.pushs(do.stack.push);
 
         } else {
+            const CustomBinOp = enum {
+                @"==", @"!=",
+                @"<s", @"<u", @"<",
+                @">s", @">u", @">",
+                @"<=s", @"<=u", @"<=",
+                @">=s", @">=u", @">=",
+                @"+", @"-", @"*",
+                @"/s", @"/u", @"/",
+                @"%s", @"%u",
+                @"&", @"|", @"^",
+                @"<<", @">>s", @">>u",
+                @"<<<", @">>>",
+
+                const Gen = struct {
+                    i32o: ?IR.Opcode, i64o: ?IR.Opcode, f32o: ?IR.Opcode, f64o: ?IR.Opcode,
+                    bin: bool
+                };
+                inline fn tNtest(i32o: ?IR.Opcode, i64o: ?IR.Opcode, f32o: ?IR.Opcode, f64o: ?IR.Opcode) Gen {
+                    return .{ .i32o = i32o, .i64o = i64o, .f32o = f32o, .f64o = f64o, .bin = false };
+                }
+                inline fn tNbin(i32o: ?IR.Opcode, i64o: ?IR.Opcode, f32o: ?IR.Opcode, f64o: ?IR.Opcode) Gen {
+                    return .{ .i32o = i32o, .i64o = i64o, .f32o = f32o, .f64o = f64o, .bin = true };
+                }
+                inline fn iNtest(i32o: IR.Opcode, i64o: IR.Opcode) Gen { return @This().tNtest(i32o, i64o, null, null); }
+                inline fn iNbin(i32o: IR.Opcode, i64o: IR.Opcode) Gen { return @This().tNbin(i32o, i64o, null, null); }
+                inline fn fNtest(f32o: IR.Opcode, f64o: IR.Opcode) Gen { return @This().tNtest(null, null, f32o, f64o); }
+            };
+            if (std.meta.stringToEnum(CustomBinOp, operation.name)) |op| {
+                for (operation.args) |fold|
+                    try codegen.inst(fold);
+
+                if (codegen.stack.items.len < 2)
+                    return error.TypeMismatch;
+                var tr = codegen.stack.pop();
+                const tl = codegen.stack.pop();
+                if (tl != .val or !tr.eqlOrCast(tl.val, codegen))
+                    return Stack.err(codegen, tl, tr, null);
+
+                // TODO: sign deduce
+                const do = switch (op) {
+                    .@"==" => CustomBinOp.tNtest(.i32_eq, .i64_eq, .f32_eq, .f64_eq),
+                    .@"!=" => CustomBinOp.tNtest(.i32_ne, .i64_ne, .f32_ne, .f64_ne),
+                    .@"<s" => CustomBinOp.iNtest(.i32_lt_s, .i64_lt_s),
+                    .@"<u" => CustomBinOp.iNtest(.i32_lt_u, .i64_lt_u),
+                    .@"<" => CustomBinOp.fNtest(.f32_lt, .f64_lt),
+                    .@">s" => CustomBinOp.iNtest(.i32_gt_s, .i64_gt_s),
+                    .@">u" => CustomBinOp.iNtest(.i32_gt_u, .i64_gt_u),
+                    .@">" => CustomBinOp.fNtest(.f32_gt, .f64_gt),
+                    .@"<=s" => CustomBinOp.iNtest(.i32_le_s, .i64_le_s),
+                    .@"<=u" => CustomBinOp.iNtest(.i32_le_u, .i64_le_u),
+                    .@"<=" => CustomBinOp.fNtest(.f32_le, .f64_le),
+                    .@">=s" => CustomBinOp.iNtest(.i32_ge_s, .i64_ge_s),
+                    .@">=u" => CustomBinOp.iNtest(.i32_ge_u, .i64_ge_u),
+                    .@">=" => CustomBinOp.fNtest(.f32_ge, .f64_ge),
+                    .@"+" => CustomBinOp.tNbin(.i32_add, .i64_add, .f32_add, .f64_add),
+                    .@"-" => CustomBinOp.tNbin(.i32_sub, .i64_sub, .f32_sub, .f64_sub),
+                    .@"*" => CustomBinOp.tNbin(.i32_mul, .i64_mul, .f32_mul, .f64_mul),
+                    .@"/s" => CustomBinOp.iNbin(.i32_div_s, .i64_div_s),
+                    .@"/u" => CustomBinOp.iNbin(.i32_div_u, .i64_div_u),
+                    .@"/" => CustomBinOp.tNbin(null, null, .f32_div, .f64_div),
+                    .@"%s" => CustomBinOp.iNbin(.i32_rem_s, .i64_rem_s),
+                    .@"%u" => CustomBinOp.iNbin(.i32_rem_u, .i64_rem_u),
+                    .@">>s" => CustomBinOp.iNbin(.i32_shr_s, .i64_shr_s),
+                    .@">>u" => CustomBinOp.iNbin(.i32_shr_u, .i64_shr_u),
+                    .@"&" => CustomBinOp.iNbin(.i32_and, .i64_and),
+                    .@"|" => CustomBinOp.iNbin(.i32_or, .i64_or),
+                    .@"^" => CustomBinOp.iNbin(.i32_xor, .i64_xor),
+                    .@"<<" => CustomBinOp.iNbin(.i32_shl, .i64_shl),
+                    .@"<<<" => CustomBinOp.iNbin(.i32_rotl, .i64_rotl),
+                    .@">>>" => CustomBinOp.iNbin(.i32_rotr, .i64_rotr),
+                };
+
+                try codegen.opcode(switch (tl.val) {
+                    .i32 => do.i32o,
+                    .i64 => do.i64o,
+                    .f32 => do.f32o,
+                    .f64 => do.f64o,
+                } orelse return Stack.err(codegen,
+                    if (do.i32o != null) Stack{ .i32 = 0 } else Stack.of(.f32), tl, null));
+                return codegen.push(if (do.bin) tl.val else .i32);
+            }
+
             if (operation.name.len > 3) { // Short const
                 const head = operation.name[0..operation.name.len-3];
                 const tail = operation.name[operation.name.len-3..];
