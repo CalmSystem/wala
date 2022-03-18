@@ -38,6 +38,20 @@ pub const Module = struct {
     pub fn exports(self: *const Module) iters.Export {
         return .{ .m = self };
     }
+
+    pub fn findFunc(self: *const Module, id: u.Txt) ?FoundId(Func) {
+        return findById(Func, self.funcs, id);
+    }
+    pub fn findGlobal(self: *const Module, id: u.Txt) ?FoundId(Global) {
+        return findById(Global, self.globals, id);
+    }
+    pub fn FoundId(comptime T: type) type { return struct { ptr: *const T, idx: u32 }; }
+    fn findById(comptime T: type, list: []const T, id: u.Txt) ?FoundId(T) {
+        return for (list) |*t, i| {
+            if (t.id != null and u.strEql(id, t.id.?))
+                break .{ .ptr = t, .idx = @truncate(ulen, i) };
+        } else null;
+    }
 };
 
 pub const Func = struct {

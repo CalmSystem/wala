@@ -1,13 +1,15 @@
 use($wasi "wasi_unstable")
 
-data(16 "Hello, W0rld!\n")
+data $ret (i32)
+data $ciovec (i32 $ptr i32 $len)
+data $str "Hello, W0rld!\n"
 
 func $main export()
-  store 8 16u32
-  store offset=4 8 14u32
-  call $wasi:fd_write
+  {($ciovec:ptr) *= ($str)}
+  {($ciovec:len) *= (size.of $str)}
+  $wasi:fd_write
     1 ;; fd: stdout
-    8 ;; const ciovec*
+    ($ciovec) ;; const ciovec*
     1 ;; len of ciovec
-    4 ;; written*
+    ($ret) ;; written*
   drop

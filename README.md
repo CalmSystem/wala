@@ -11,9 +11,11 @@ It is implemented as a set of complementary extensions over standard [WebAssembl
 ```wal
 func $fib (export)
   u64 $n
-  if {$n <= 2}
+  if {($n) <= 2}
     1
-    {$fib{$n - 2} + $fib{$n - 1}}
+    +
+      $fib{($n) - 2}
+      $fib{($n) - 1}
 
 ```
 
@@ -98,6 +100,10 @@ Like function calls
 - `(+ 35i32 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
 - `(+ 35i64 7)` -> `(i64.add (i64.const 35) (i64.const 7))`
 
+#### Ident expansion
+
+- `($a_func ($a_param) ($a_global))` -> `(call $a_func (local.get $a_param) (global.get $a_global)`
+
 ### Planned
 
 #### Short var
@@ -108,10 +114,6 @@ Like function calls
 #### Result Type Deduction
 
 No need to specify blocks and function result types
-
-#### Name expansion
-
-- `($func $param $global)` -> `(call $func (local.get $param) (global.get $global)`
 
 #### Interface integration
 

@@ -593,6 +593,12 @@ const Codegen = struct {
                     it.second[i-it.first.len]
                 else error.NotFound;
         }
+        fn find(it: @This(), id: u.Txt) ?u32 {
+            return for (it.ids) |f, j| {
+                if (f != null and u.strEql(id, f.?))
+                    break @truncate(u32, j);
+            } else null;
+        }
     },
     stack: std.ArrayListUnmanaged(Stack) = .{},
 
@@ -725,8 +731,23 @@ const Codegen = struct {
     };
     fn inst(codegen: *Codegen, expr: Expr) Error!void {
         codegen.ctx.at = expr;
-        const operation = expr.val.asFunc() orelse Expr.Val.Func{
-            .name = expr.val.asKeyword() orelse return error.NotOp };
+        const operation = expr.val.asFunc() orelse blk: {
+            if (expr.val.asKeyword()) |name|
+                break :blk Expr.Val.Func{ .name = name };
+
+            switch(expr.val) {
+                .list => |exprs| if (exprs.len > 0) if (exprs[0].val.asId()) |id| {
+                    //TODO: detect collisions or specify resolution order
+                    const kind = if (codegen.locals.find(id) != null) @tagName(IR.Opcode.local_get)
+                        else if (codegen.ctx.m.findFunc(id) != null) @tagName(IR.Opcode.call) 
+                        else if (codegen.ctx.m.findGlobal(id) != null) @tagName(IR.Opcode.global_get)
+                        else null;
+                    if (kind) |name|
+                        break :blk Expr.Val.Func{ .name = name, .id = id, .args = exprs[1..] };
+                }, else => { }
+            }
+            return error.NotOp;
+        };
 
         if (nameToOp(operation.name)) |op| {
             const do = switch (op) {
@@ -830,10 +851,7 @@ const Codegen = struct {
                     .narg = Op.Narg.id,
                     .gen = struct { fn gen(self: *Codegen, func: Expr.Val.Func) !void {
                         const i = if (func.id) |id|
-                            for (self.locals.ids) |f, j| {
-                                if (f != null and u.strEql(id, f.?))
-                                    break @truncate(u32, j);
-                            } else
+                            self.locals.find(id) orelse
                                 return error.NotFound
                         else
                             try u32_(func.args[0]);
@@ -844,24 +862,39 @@ const Codegen = struct {
                         try self.push(typ);
                     } }.gen
                 },
+                .global_get => comptime Op {
+                    .narg = Op.Narg.id,
+                    .gen = struct { fn gen(self: *Codegen, func: Expr.Val.Func) !void {
+                        const found = if (func.id) |id|
+                            self.ctx.m.findGlobal(id) orelse
+                                return error.NotFound
+                        else blk: {
+                            const i = try u32_(func.args[0]);
+                            break :blk IR.Module.FoundId(IR.Global){
+                                .ptr = &self.ctx.m.globals[i], .idx = i };
+                        };
+
+                        try self.uleb(found.idx);
+                        try self.push(found.ptr.type);
+                    } }.gen
+                },
                 .nop => comptime Op{ },
                 .call => comptime Op{
                     .narg = Op.Narg.id,
                     .gen = struct { fn gen(self: *Codegen, func: Expr.Val.Func) !void {
-                        const i = if (func.id) |id|
-                            for (self.ctx.m.funcs) |f, j| {
-                                if (f.id != null and u.strEql(id, f.id.?))
-                                    break @truncate(u32, j);
-                            } else return error.NotFound
-                        else
-                            try u32_(func.args[0]);
+                        const found = if (func.id) |id|
+                            self.ctx.m.findFunc(id) orelse
+                                return error.NotFound
+                        else blk: {
+                            const i = try u32_(func.args[0]); 
+                            if (i > self.ctx.m.funcs.len) return error.NotFound;
+                            break :blk IR.Module.FoundId(IR.Func){
+                                .ptr = &self.ctx.m.funcs[i], .idx = i };
+                        };
                         
-                        if (i > self.ctx.m.funcs.len) return error.NotFound;
-                        const typ = self.ctx.m.funcs[i].type;
-
-                        try self.pops(typ.params);
-                        try self.uleb(i);
-                        try self.pushs(typ.returns);
+                        try self.pops(found.ptr.type.params);
+                        try self.uleb(found.idx);
+                        try self.pushs(found.ptr.type.returns);
                     } }.gen
                 },
                 .drop => comptime Op{

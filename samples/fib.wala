@@ -2,8 +2,8 @@ func $fib (export "fib")
   param $n i64
   result i64
   nop ;; check for optimizations
-  if (result i64) {(local.get $n) <=u 2}
+  if (result i64) {($n) <=u 2}
     1i64
     +
-      call $fib {(local.get $n) - 2}
-      call $fib {(local.get $n) - 1}
+      $fib{($n) - 2}
+      $fib{($n) - 1}
