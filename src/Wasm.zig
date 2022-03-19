@@ -2,14 +2,14 @@ const std = @import("std");
 const u = @import("util.zig");
 const IR = @import("IR.zig");
 
-pub fn load(_: u.Bin, _: std.mem.Allocator) !IR.Module {
+pub fn load(_: u.Bin, allocator: std.mem.Allocator) !IR.Module {
     //TODO: implem
-    unreachable;
+    return IR.Module.init(allocator);
 }
 
 pub const Opt = struct {};
-pub fn emit(m: IR.Module, comptime Writer: type, writer: Writer, comptime opt: Opt) !void {
-    const e = Emitter(Writer){ .writer = writer, .m = &m, .opt = opt };
+pub fn emit(m: IR.Module, writer: anytype, comptime opt: Opt) !void {
+    const e = Emitter(@TypeOf(writer)){ .writer = writer, .m = &m, .opt = opt };
 
     try writer.writeAll(&std.wasm.magic);
     try writer.writeAll(&std.wasm.version);
@@ -191,4 +191,20 @@ fn Emitter(comptime Writer: type) type {
             }
         }
     };
+}
+
+test "empty module" {
+    var empty: [8]u8 = undefined;
+    std.mem.copy(u8, &empty, &std.wasm.magic);
+    std.mem.copy(u8, empty[4..], &std.wasm.version);
+
+    const module = try load(&empty, std.testing.allocator);
+    defer module.deinit();
+
+    var generated = try std.ArrayList(u8).initCapacity(std.testing.allocator, empty.len);
+    defer generated.deinit();
+
+    try emit(module, generated.writer(), .{});
+
+    try std.testing.expectEqualSlices(u8, &empty, generated.items);
 }

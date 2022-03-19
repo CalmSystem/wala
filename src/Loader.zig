@@ -40,7 +40,7 @@ pub fn load(self: *Self, entry: u.Txt) !IR.Module {
 }
 
 pub fn writeWasm(m: IR.Module, writer: anytype) !void {
-    return Wasm.emit(m, @TypeOf(writer), writer, .{});
+    return Wasm.emit(m, writer, .{});
 }
 pub fn writeText(m: IR.Module, writer: anytype, alloc: std.mem.Allocator, fmt: @import("Expr.zig").Format) !void {
     const wat = try Text.emit(m, alloc, .{});

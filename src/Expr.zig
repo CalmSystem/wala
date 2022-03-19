@@ -134,9 +134,8 @@ pub const Val = union(enum) {
                             try writer.writeByte('(');
                         if (list.len > 0)
                             try list[0].val.print(fmt, writer, depth);
-                        var i: usize = 1;
-                        for (list) |expr| {
-                            if (fmt != .tree and list[i - 1].val.asText() != null and list[i].val.asText() != null) {
+                        for (list[1..]) |expr, i| {
+                            if (fmt != .tree and list[i].val.asText() != null and expr.val.asText() != null) {
                                 try writer.writeByte(' ');
                             } else {
                                 try writer.writeByte('\n');
@@ -155,10 +154,12 @@ pub const Val = union(enum) {
             },
             .id => |str| {
                 try writer.writeByte('$');
+                //FIXME: may need to escape
                 try writer.writeAll(str);
             },
             .string => |str| {
                 try writer.writeByte('"');
+                //FIXME: must escape
                 try writer.writeAll(str);
                 try writer.writeByte('"');
             },

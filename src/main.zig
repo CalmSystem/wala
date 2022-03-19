@@ -196,3 +196,7 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) void {
     runtime.cwd_dir = tmpDir.dir;
     _ = runtime.spawnAndWait() catch unreachable;
 }
+
+test {
+    _ = @import("Wasm.zig");
+}
