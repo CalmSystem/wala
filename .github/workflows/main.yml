@@ -1,0 +1,43 @@
+name: Main
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: goto-bus-stop/setup-zig@v1
+        with:
+          version: "0.9.0"
+      - uses: nektro/actions-setup-zigmod@v1
+      - uses: mwilliamson/setup-wasmtime-action@v1
+        with:
+          wasmtime-version: "0.35.1"
+      - name: Install kcov
+        run: sudo apt-get install -y kcov
+      - name: Install deps
+        run: zigmod ci
+      - name: Check format
+        run: zig fmt --check src/*.zig
+      - name: Run all tests
+        run: zig build test -Dcoverage
+      - name: Archive code coverage
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage
+          retention-days: 5
+          path: zig-out/coverage
+      - name: Build release
+        run: zig build -Drelease-safe
+      - name: Archive release binary
+        uses: actions/upload-artifact@v3
+        with:
+          name: wala
+          retention-days: 5
+          path: zig-out/bin/wala
