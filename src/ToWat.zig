@@ -22,7 +22,7 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
         n_arr += @boolToInt(func.type.returns.len > 0);
         n_arr += switch (func.body) {
             .import => @as(usize, 1),
-            .code => @panic("TODO: wasm2wat")
+            .code => @panic("TODO: wasm2wat"),
         };
 
         var arr = try Arr.init(n_arr, allocator);
@@ -34,9 +34,8 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
         for (func.exports) |expor|
             arr.append(try exportAbrev(expor, allocator));
         switch (func.body) {
-            .import => |impor|
-                arr.append(try importAbbrev(impor, allocator)),
-            else => {}
+            .import => |impor| arr.append(try importAbbrev(impor, allocator)),
+            else => {},
         }
 
         if (func.type.params.len > 0)
@@ -45,7 +44,7 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
             arr.append(try valtypes("result", func.type.returns, allocator));
         switch (func.body) {
             .import => {},
-            .code => unreachable
+            .code => unreachable,
         }
 
         top.append(arr.finish());
@@ -73,7 +72,7 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
     for (m.datas) |data| {
         var n_arr: usize = 1 + @as(usize, switch (data.body) {
             .active => @panic("TODO: wasm2wat"),
-            .passive => 1
+            .passive => 1,
         });
 
         var arr = try Arr.init(n_arr, allocator);
@@ -86,8 +85,7 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
                 // arr.append(act.offset);
                 // arr.append(try string(act.content, allocator));
             },
-            .passive => |pas|
-                arr.append(try string(pas, allocator))
+            .passive => |pas| arr.append(try string(pas, allocator)),
         }
 
         top.append(arr.finish());
@@ -109,7 +107,7 @@ fn id(from: u.Txt, allocator: std.mem.Allocator) !Expr {
     return Expr{ .val = .{ .id = try allocator.dupe(u8, from) } };
 }
 fn number(n: i64, allocator: std.mem.Allocator) !Expr {
-    return keyword(try std.fmt.allocPrint(allocator, "{d}", .{ n }));
+    return keyword(try std.fmt.allocPrint(allocator, "{d}", .{n}));
 }
 const Arr = struct {
     inner: std.ArrayListUnmanaged(Expr),
@@ -145,7 +143,7 @@ fn valtypes(comptime key: u.Txt, of: []const IR.Func.Valtype, allocator: std.mem
     const typ = try allocator.alloc(Expr, 1 + of.len);
     typ[0] = keyword(key);
     for (of) |param, i| {
-        typ[i+1] = switch (param) {
+        typ[i + 1] = switch (param) {
             .i32 => keyword("i32"),
             .i64 => keyword("i64"),
             .f32 => keyword("f32"),

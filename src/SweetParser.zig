@@ -3,7 +3,7 @@ const SParser = @import("SParser.zig");
 const Expr = SParser.Expr;
 const TextIterator = SParser.TextIterator;
 
-pub const Error = error {
+pub const Error = error{
     TopLevelIndent,
     IndentMismatch,
 } || SParser.Error;
@@ -52,7 +52,7 @@ fn parseIndent(iter: *TextIterator) []const u8 {
 pub fn mayParseTopOne(iter: *TextIterator, alloc: std.mem.Allocator) !?Expr {
     if (isIndented(parseIndent(iter)))
         return error.TopLevelIndent;
-    
+
     if (try mayParseOne(iter, alloc, "")) |ei| {
         if (ei.next_indent.len != 0)
             return error.IndentMismatch;
@@ -61,16 +61,12 @@ pub fn mayParseTopOne(iter: *TextIterator, alloc: std.mem.Allocator) !?Expr {
     return null;
 }
 
-const ExprIndent = struct {
-    expr: Expr,
-    next_indent: []const u8
-};
+const ExprIndent = struct { expr: Expr, next_indent: []const u8 };
 fn mayParseOne(iter: *TextIterator, alloc: std.mem.Allocator, my_indent: []const u8) SParser.Error!?ExprIndent {
     if (iter.eof()) return null;
-    
+
     //TODO: special blocks like \\
-    const left = (try SParser.mayParseOne(iter, alloc))
-        orelse return null;
+    const left = (try SParser.mayParseOne(iter, alloc)) orelse return null;
 
     var exprs = std.ArrayList(Expr).init(alloc);
     while (true) {
@@ -98,12 +94,5 @@ fn mayParseOne(iter: *TextIterator, alloc: std.mem.Allocator, my_indent: []const
         }
     }
 
-    return ExprIndent{
-        .expr = if (exprs.items.len == 0) left
-            else Expr{
-                .at = .{ .offset = left.at.?.offset, .len = exprs.items[exprs.items.len-1].at.?.end()-left.at.?.offset },
-                .val = .{ .list = exprs.toOwnedSlice() }
-            },
-        .next_indent = next_indent
-    };
+    return ExprIndent{ .expr = if (exprs.items.len == 0) left else Expr{ .at = .{ .offset = left.at.?.offset, .len = exprs.items[exprs.items.len - 1].at.?.end() - left.at.?.offset }, .val = .{ .list = exprs.toOwnedSlice() } }, .next_indent = next_indent };
 }

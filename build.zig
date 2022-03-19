@@ -16,7 +16,6 @@ pub fn build(b: *std.build.Builder) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
@@ -24,7 +23,19 @@ pub fn build(b: *std.build.Builder) void {
     exe_tests.setTarget(target);
     exe_tests.setBuildMode(mode);
     deps.addAllTo(exe_tests);
-
-    const test_step = b.step("test", "Run unit tests");
+    const coverage = b.option(bool, "coverage", "Generate coverage with kcov on test") orelse false;
+    if (coverage) {
+        exe_tests.setExecCmd(&[_]?[]const u8{
+            "kcov",
+            "--include-path=src",
+            b.getInstallPath(.prefix, "coverage"),
+            null, // to get zig to use the --test-cmd-bin flag
+        });
+    }
+    const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&exe_tests.step);
+
+    const fmt = b.addFmt(&[_][]const u8{ "src", "build.zig" });
+    const fmt_step = b.step("fmt", "Format all code");
+    fmt_step.dependOn(&fmt.step);
 }

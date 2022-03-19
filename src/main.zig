@@ -39,12 +39,11 @@ fn top_usage(fatal: bool) noreturn {
     std.os.exit(@boolToInt(fatal));
 }
 fn fatalErr(err: anytype) noreturn {
-    errPrint("fatal: {}\n", .{ err });
+    errPrint("fatal: {}\n", .{err});
     std.os.exit(1);
 }
 
 const top_alloc = std.heap.page_allocator;
-
 
 pub fn main() void {
     const argv = args.parseWithVerbForCurrentProcess(TopOptions, Command, top_alloc, .print) catch top_usage(true);
@@ -96,17 +95,19 @@ inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) voi
                 writer.writeByte('\n') catch unreachable;
             }
         },
-        .err => |err| fatalErr(err)
+        .err => |err| fatalErr(err),
     }
 }
 
 inline fn aLoader() Loader {
     return .{
         .allocator = top_alloc,
-        .errAt = struct { fn do(err: Loader.ErrPoint, data: Loader.ErrData) void {
-            errPrint("{}\n", .{ err });
-            if (data) |d| errPrint("{}\n", .{ d });
-        } }.do,
+        .errAt = struct {
+            fn do(err: Loader.ErrPoint, data: Loader.ErrData) void {
+                errPrint("{}\n", .{err});
+                if (data) |d| errPrint("{}\n", .{d});
+            }
+        }.do,
     };
 }
 
@@ -183,9 +184,9 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) void {
     Loader.writeWasm(module, wasmFile.writer()) catch unreachable;
     wasmFile.close();
 
-    const argv = top_alloc.alloc([]const u8, positionals.len+1) catch unreachable;
+    const argv = top_alloc.alloc([]const u8, positionals.len + 1) catch unreachable;
     defer top_alloc.free(argv);
-    
+
     argv[0] = options.runtime;
     argv[1] = wasmName;
     std.mem.copy([]const u8, argv[2..], positionals[1..]);

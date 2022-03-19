@@ -21,13 +21,15 @@ fn skipSpaces(iter: *TextIterator) void {
         iter.skip();
         std.debug.assert(iter.peek().scalar == ';');
         iter.skip();
-        
+
         _ = iter.readWhile(struct {
-            fn pred(cp: u21) bool { return cp != '\n'; }
+            fn pred(cp: u21) bool {
+                return cp != '\n';
+            }
         }.pred);
     }
 }
-pub const Error = error {
+pub const Error = error{
     UnexpectedEndOfFile,
     OutOfMemory,
     InvalidUtf8,
@@ -35,7 +37,7 @@ pub const Error = error {
 fn mayParseOneBlock(iter: *TextIterator, alloc: std.mem.Allocator, infix: bool) Error!?std.ArrayList(Expr) {
     const open: u21 = if (infix) '{' else '(';
     const close: u21 = if (infix) '}' else ')';
-    
+
     std.debug.assert(iter.peek().scalar == open);
     iter.skip();
 
@@ -78,19 +80,20 @@ fn mayParseOneBlock(iter: *TextIterator, alloc: std.mem.Allocator, infix: bool) 
 }
 inline fn digit(c: u21) !u8 {
     const t = @truncate(u8, c);
-    return switch(c) {
-        '0'...'9' => t-'0',
-        'A'...'F' => t-'A'+10,
-        'a'...'f' => t-'a'+10,
-        else => error.InvalidUtf8
+    return switch (c) {
+        '0'...'9' => t - '0',
+        'A'...'F' => t - 'A' + 10,
+        'a'...'f' => t - 'a' + 10,
+        else => error.InvalidUtf8,
     };
 }
 inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?Expr.Val {
     const infix = iter.peek().scalar == '{';
     if (iter.peek().scalar == '(' or infix) {
         return if (try mayParseOneBlock(iter, alloc, infix)) |list|
-            Expr.Val{ .list = list.items } else null;
-
+            Expr.Val{ .list = list.items }
+        else
+            null;
     } else { // String
         const dollared = iter.peek().scalar == '$';
         if (dollared) iter.skip();
@@ -121,8 +124,8 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
                         else => {
                             const m = iter.next() orelse
                                 return error.UnexpectedEndOfFile;
-                            try str.append((try digit(n.scalar))*16 + try digit(m.scalar));
-                        }
+                            try str.append((try digit(n.scalar)) * 16 + try digit(m.scalar));
+                        },
                     }
                 }
                 try str.appendSlice(iter.peek().bytes);
@@ -134,9 +137,9 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
         } else {
             text = iter.readWhile(struct {
                 fn pred(cp: u21) bool {
-                    return switch(cp) {
-                        ';','(',')','{','}','[',']' => false,
-                        else => !TextIterator.isSpace(cp)
+                    return switch (cp) {
+                        ';', '(', ')', '{', '}', '[', ']' => false,
+                        else => !TextIterator.isSpace(cp),
                     };
                 }
             }.pred);
@@ -146,8 +149,7 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
             return Expr.Val{ .id = try u.toTxt(text) };
         } else if (quoted) {
             return Expr.Val{ .string = text };
-        } else
-            return Expr.Val{ .keyword = text };
+        } else return Expr.Val{ .keyword = text };
     }
 }
 
@@ -156,29 +158,22 @@ pub fn mayParseOne(iter: *TextIterator, alloc: std.mem.Allocator) Error!?Expr {
     const at_offset = iter.peek().offset;
 
     const left = if (try mayParseOneVal(iter, alloc)) |val|
-        Expr{
-            .at = .{ .offset = at_offset, .len = iter.peek().offset-at_offset },
-            .val = val
-        } else return null;
-    
+        Expr{ .at = .{ .offset = at_offset, .len = iter.peek().offset - at_offset }, .val = val }
+    else
+        return null;
+
     // Partial neoteric-expression
     if (iter.peek().scalar == '{') {
         const list = try alloc.alloc(Expr, 2);
         list[0] = left;
         list[1] = (try mayParseOne(iter, alloc)).?; // Always infix list
 
-        return Expr{
-            .at = .{ .offset = at_offset, .len = iter.peek().offset-at_offset },
-            .val = .{ .list = list }
-        };
+        return Expr{ .at = .{ .offset = at_offset, .len = iter.peek().offset - at_offset }, .val = .{ .list = list } };
     } else if (iter.peek().scalar == '(') {
         var exprs = (try mayParseOneBlock(iter, alloc, false)) orelse return left;
         try exprs.insert(0, left);
 
-        return Expr{
-            .at = .{ .offset = at_offset, .len = iter.peek().offset-at_offset },
-            .val = .{ .list = exprs.toOwnedSlice() }
-        };
+        return Expr{ .at = .{ .offset = at_offset, .len = iter.peek().offset - at_offset }, .val = .{ .list = exprs.toOwnedSlice() } };
     }
     return left;
 }
@@ -193,13 +188,12 @@ inline fn transformInfix(list: *std.ArrayList(Expr)) void {
 
     const op = es[0];
     var i: usize = 3;
-    while (i < es.len): (i += 2) {
+    while (i < es.len) : (i += 2) {
         if (!op.val.shallowEql(es[i].val)) return;
     }
 
     i = 3;
-    while (i < list.items.len-1): (i += 1) {
+    while (i < list.items.len - 1) : (i += 1) {
         _ = list.orderedRemove(i);
     }
 }
-

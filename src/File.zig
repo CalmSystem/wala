@@ -27,14 +27,14 @@ pub const Any = union(Type) {
         return Any{ .text = .{ .realpath = safepath, .text = try u.toTxt(bytes), .allocator = allocator } };
     }
     pub fn deinit(self: Any) void {
-        switch(self) {
+        switch (self) {
             .wasm => |wasm| wasm.deinit(),
             .text => |text| text.deinit(),
         }
     }
 
     pub inline fn realpath(self: Any) u.Txt {
-        return switch(self) {
+        return switch (self) {
             .wasm => |wasm| wasm.realpath,
             .text => |text| text.realpath,
         };
@@ -67,7 +67,7 @@ pub const Text = struct {
     inline fn iter(self: Text) TextIterator {
         return TextIterator.unsafeInit(self.text);
     }
-    inline fn parseAs(comptime sweet: bool) fn(*TextIterator, std.mem.Allocator) SweetParser.Error![]Expr {
+    inline fn parseAs(comptime sweet: bool) fn (*TextIterator, std.mem.Allocator) SweetParser.Error![]Expr {
         return if (comptime sweet) SweetParser.parseAll else SParser.parseAll;
     }
 
@@ -130,7 +130,7 @@ pub const LinePoint = struct {
     pub fn init(text: u.Txt, offset: usize, path: u.Txt) LinePoint {
         std.debug.assert(u.isTxt(text));
         var iter = TextIterator.Inner{ .bytes = text };
-        var p: Position = .{ };
+        var p: Position = .{};
         var last_line: usize = 0;
         while (iter.next()) |cp| {
             if (cp.offset >= offset)

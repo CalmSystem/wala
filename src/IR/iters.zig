@@ -4,7 +4,7 @@ const IR = @import("../IR.zig");
 pub const External = std.wasm.ExternalKind;
 inline fn nextExternal(e: External) External {
     if (e == .global) return e;
-    return @intToEnum(External, @enumToInt(e)+1);
+    return @intToEnum(External, @enumToInt(e) + 1);
 }
 
 pub const Import = struct {
@@ -29,7 +29,7 @@ pub const Import = struct {
                 self.offset = 0;
                 return self.next();
             },
-            .global => self.nextN("globals")
+            .global => self.nextN("globals"),
         };
     }
     inline fn nextN(self: *Import, comptime fname: []const u8) ?Point {
@@ -39,9 +39,8 @@ pub const Import = struct {
             const body = slice[index].body;
             self.offset += 1;
             switch (body) {
-                .import => |key|
-                    return Point{ .key = key, .kind = self.state, .index = index },
-                else => {} 
+                .import => |key| return Point{ .key = key, .kind = self.state, .index = index },
+                else => {},
             }
         }
         if (self.state == .global) return null;
@@ -74,10 +73,10 @@ pub const Export = struct {
                 return Point{ .key = key, .kind = .memory, .index = 0 };
             } else {
                 self.state = nextExternal(self.state);
-                self.offset = .{ };
+                self.offset = .{};
                 return self.next();
             },
-            .global => self.nextN("globals")
+            .global => self.nextN("globals"),
         };
     }
     inline fn nextN(self: *Export, comptime fname: []const u8) ?Point {

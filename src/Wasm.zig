@@ -7,8 +7,7 @@ pub fn load(_: u.Bin, _: std.mem.Allocator) !IR.Module {
     unreachable;
 }
 
-pub const Opt = struct {
-};
+pub const Opt = struct {};
 pub fn emit(m: IR.Module, comptime Writer: type, writer: Writer, comptime opt: Opt) !void {
     const e = Emitter(Writer){ .writer = writer, .m = &m, .opt = opt };
 
@@ -117,7 +116,7 @@ fn Emitter(comptime Writer: type) type {
             for (e.m.funcs) |func| {
                 switch (func.body) {
                     .code => len += 1,
-                    else => { }
+                    else => {},
                 }
             }
             if (len == 0) return;
@@ -126,7 +125,7 @@ fn Emitter(comptime Writer: type) type {
             for (e.m.funcs) |func, i| {
                 switch (func.body) {
                     .code => try e.uleb(i),
-                    else => { }
+                    else => {},
                 }
             }
         }
@@ -155,7 +154,7 @@ fn Emitter(comptime Writer: type) type {
             for (e.m.funcs) |func| {
                 switch (func.body) {
                     .code => len += 1,
-                    else => { }
+                    else => {},
                 }
             }
             if (len == 0) return;
@@ -164,7 +163,7 @@ fn Emitter(comptime Writer: type) type {
             for (e.m.funcs) |func| {
                 switch (func.body) {
                     .code => |code| try e.string(code.bytes),
-                    else => {}
+                    else => {},
                 }
             }
         }
@@ -187,7 +186,7 @@ fn Emitter(comptime Writer: type) type {
                     .passive => |pas| {
                         try e.byte(1);
                         try e.string(pas);
-                    }
+                    },
                 }
             }
         }

@@ -2,7 +2,6 @@ const u = @import("../util.zig");
 
 /// See https://github.com/WebAssembly/tool-conventions/blob/main/Linking.md
 /// Custom section after data
-
 version: u32 = 2,
 subsections: []Sub = &[_]Sub{},
 

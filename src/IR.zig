@@ -45,7 +45,9 @@ pub const Module = struct {
     pub fn findGlobal(self: *const Module, id: u.Txt) ?FoundId(Global) {
         return findById(Global, self.globals, id);
     }
-    pub fn FoundId(comptime T: type) type { return struct { ptr: *const T, idx: u32 }; }
+    pub fn FoundId(comptime T: type) type {
+        return struct { ptr: *const T, idx: u32 };
+    }
     fn findById(comptime T: type, list: []const T, id: u.Txt) ?FoundId(T) {
         return for (list) |*t, i| {
             if (t.id != null and u.strEql(id, t.id.?))
@@ -70,10 +72,7 @@ pub const Func = struct {
 };
 
 pub const Table = struct {
-    body: union(enum) {
-        import: ImportName,
-        intern: void
-    },
+    body: union(enum) { import: ImportName, intern: void },
     id: ?u.Txt,
     exports: []const ExportName = &[_]ExportName{},
     type: std.wasm.RefType,
@@ -101,7 +100,6 @@ pub const Global = struct {
 pub const Elem = struct {
     //TODO:
 };
-
 
 pub const Data = struct {
     body: union(enum) {
