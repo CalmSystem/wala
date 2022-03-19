@@ -2,7 +2,7 @@ const std = @import("std");
 const u = @import("util.zig");
 const File = @import("File.zig");
 const IR = @import("IR.zig");
-const Wat = @import("Wat.zig");
+const Text = @import("Text.zig");
 const Wasm = @import("Wasm.zig");
 
 allocator: std.mem.Allocator,
@@ -11,7 +11,7 @@ errAt: fn (point: ErrPoint, data: ErrData) void,
 
 const Self = @This();
 pub const ErrPoint = File.ErrPoint;
-pub const ErrData = Wat.ErrData;
+pub const ErrData = Text.ErrData;
 
 pub fn load(self: *Self, entry: u.Txt) !IR.Module {
     //TODO: cwd from trace
