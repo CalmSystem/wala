@@ -98,11 +98,10 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
         const dollared = iter.peek().scalar == '$';
         if (dollared) iter.skip();
 
-        var text: []const u8 = "";
+        var str = std.ArrayList(u8).init(alloc);
         const quoted = iter.peek().scalar == '"';
         if (quoted) {
             iter.skip();
-            var str = std.ArrayList(u8).init(alloc);
             while (iter.peek().scalar != '"') {
                 if (iter.eof())
                     return error.UnexpectedEndOfFile;
@@ -127,15 +126,14 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
                             try str.append((try digit(n.scalar)) * 16 + try digit(m.scalar));
                         },
                     }
+                } else {
+                    try str.appendSlice(iter.peek().bytes);
                 }
-                try str.appendSlice(iter.peek().bytes);
                 iter.skip();
             }
             iter.skip();
-
-            text = str.toOwnedSlice();
         } else {
-            text = iter.readWhile(struct {
+            const slice = iter.readWhile(struct {
                 fn pred(cp: u21) bool {
                     return switch (cp) {
                         ';', '(', ')', '{', '}', '[', ']' => false,
@@ -143,8 +141,10 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
                     };
                 }
             }.pred);
+            try str.appendSlice(slice);
         }
 
+        const text = str.toOwnedSlice();
         if (dollared) {
             return Expr.Val{ .id = try u.toTxt(text) };
         } else if (quoted) {
@@ -194,6 +194,7 @@ inline fn transformInfix(list: *std.ArrayList(Expr)) void {
 
     i = 3;
     while (i < list.items.len - 1) : (i += 1) {
+        list.items[i].deinit(list.allocator);
         _ = list.orderedRemove(i);
     }
 }

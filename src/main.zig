@@ -198,5 +198,6 @@ inline fn run(options: RunOptions, positionals: Positionals, help: bool) void {
 }
 
 test {
+    _ = @import("SweetParser.zig");
     _ = @import("Wasm.zig");
 }

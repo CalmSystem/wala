@@ -36,7 +36,7 @@ pub const Format = enum {
 pub const Val = union(enum) {
     list: []Expr,
     keyword: u.Txt,
-    string: u.Bin, //MAYBE: split string in { name, binary }
+    string: u.Bin,
     id: u.Txt,
 
     fn deinit(self: Val, allocator: std.mem.Allocator) void {
@@ -46,7 +46,7 @@ pub const Val = union(enum) {
                     expr.deinit(allocator);
                 allocator.free(exprs);
             },
-            else => {},
+            .keyword, .string, .id => |str| allocator.free(str),
         }
     }
 
