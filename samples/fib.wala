@@ -1,4 +1,4 @@
-func $fib (export "fib")
+func $fib export()
   param $n i64
   result i64
   nop ;; check for optimizations

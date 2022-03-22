@@ -203,7 +203,7 @@ fn loadFunc(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void {
     const importAbbrev = try hasImportAbbrev(args, importParent != null);
     const f: *IR.Func = ctx.pop("funcs", importParent != null or importAbbrev);
 
-    const io = try ctx.exportsImportNames(args, importAbbrev);
+    const io = try ctx.exportsImportNames(args, importAbbrev, f.id);
     f.exports = io.exports;
     if (io.import orelse importParent) |body|
         f.body = .{ .import = body };
@@ -230,12 +230,12 @@ fn loadFunc(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void {
 //...
 fn loadMemory(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void {
     const importAbbrev = try hasImportAbbrev(args, importParent != null);
-    const io = try ctx.exportsImportNames(args, importAbbrev);
+    const id = if (ctx.m.memory) |m| m.id else null;
+    const io = try ctx.exportsImportNames(args, importAbbrev, id);
 
     //TODO: data abbrev
     const memtyp = try limit(io.remain);
 
-    const id = if (ctx.m.memory) |m| m.id else null;
     ctx.m.memory = .{
         .id = id,
         .exports = io.exports,
@@ -353,7 +353,7 @@ const ExportsImportName = struct {
     import: ?IR.ImportName,
     remain: []const Expr,
 };
-fn exportsImportNames(ctx: *Ctx, args: []const Expr, withImport: bool) !ExportsImportName {
+fn exportsImportNames(ctx: *Ctx, args: []const Expr, withImport: bool, fallbackExport: ?u.Txt) !ExportsImportName {
     var i: usize = 0;
     while (i < args.len and p.asFuncNamed(args[i], "export") != null) : (i += 1) {}
 
@@ -362,9 +362,11 @@ fn exportsImportNames(ctx: *Ctx, args: []const Expr, withImport: bool) !ExportsI
     while (i < args.len) : (i += 1) {
         const expor = p.asFuncNamed(args[i], "export") orelse break;
         ctx.at = args[i];
-        if (expor.args.len != 1) return error.BadExport;
-        //MAYBE: abbrev name from id
-        exports[i] = try ctx.string(expor.args[0]);
+        exports[i] = switch (expor.args.len) {
+            1 => try ctx.string(expor.args[0]),
+            0 => fallbackExport orelse return error.BadExport,
+            else => return error.BadExport,
+        };
     }
 
     var import: ?IR.ImportName = null;

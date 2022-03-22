@@ -9,7 +9,7 @@ Pronounced `\vwa.la\` as in french voila *(meaning here it is)*. The exact acron
 It is implemented as a set of complementary extensions over standard [WebAssembly Text Format](https://webassembly.github.io/spec/core/text/index.html)
 
 ```wal
-func $fib (export)
+func $fib export()
   u64 $n
   if {($n) <= 2}
     1
@@ -105,11 +105,6 @@ Like function calls
 - `($a_func ($a_param) ($a_global))` -> `(call $a_func (local.get $a_param) (global.get $a_global)`
 
 ### Planned
-
-#### Short var
-
-- `$var@l` -> `(local.get $var)`
-- `$log@g` -> `(global.get $log)`
 
 #### Result Type Deduction
 
