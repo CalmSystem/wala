@@ -19,7 +19,7 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
         var n_arr = 1 + func.exports.len;
         n_arr += @boolToInt(opt.ids and func.id != null);
         n_arr += @boolToInt(func.type.params.len > 0);
-        n_arr += @boolToInt(func.type.returns.len > 0);
+        n_arr += @boolToInt(func.type.results.len > 0);
         n_arr += switch (func.body) {
             .import => @as(usize, 1),
             .code => @panic("TODO: wasm2wat"),
@@ -40,8 +40,8 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
 
         if (func.type.params.len > 0)
             arr.append(try valtypes("param", func.type.params, allocator));
-        if (func.type.returns.len > 0)
-            arr.append(try valtypes("result", func.type.returns, allocator));
+        if (func.type.results.len > 0)
+            arr.append(try valtypes("result", func.type.results, allocator));
         switch (func.body) {
             .import => {},
             .code => unreachable,
@@ -139,16 +139,11 @@ fn importAbbrev(impor: IR.ImportName, allocator: std.mem.Allocator) !Expr {
     imp[2] = try string(impor.name, allocator);
     return list(imp);
 }
-fn valtypes(comptime key: u.Txt, of: []const IR.Func.Valtype, allocator: std.mem.Allocator) !Expr {
+fn valtypes(comptime key: u.Txt, of: []const IR.Sigtype, allocator: std.mem.Allocator) !Expr {
     const typ = try allocator.alloc(Expr, 1 + of.len);
     typ[0] = keyword(key);
     for (of) |param, i| {
-        typ[i + 1] = switch (param) {
-            .i32 => keyword("i32"),
-            .i64 => keyword("i64"),
-            .f32 => keyword("f32"),
-            .f64 => keyword("f64"),
-        };
+        typ[i + 1] = keyword(@tagName(param.lower()));
     }
     return list(typ);
 }

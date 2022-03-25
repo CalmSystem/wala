@@ -104,6 +104,11 @@ Like function calls
 
 - `($a_func ($a_param) ($a_global))` -> `(call $a_func (local.get $a_param) (global.get $a_global)`
 
+#### Interface types numbers
+
+- `{42s64 <= 1}` -> `(i64.le_s (i64.const 42) (i64.const 1))`
+- `{42u64 <= 1}` -> `(i64.le_u (i64.const 42) (i64.const 1))`
+
 ### Planned
 
 #### Result Type Deduction
@@ -113,11 +118,6 @@ No need to specify blocks and function result types
 #### Interface integration
 
 Allows to define, import and use `wit` declarations. See [fib.wasi.wal](./test/wala/fib.wasi.wal)
-
-#### Tagged types
-
-- `{42s64 <= 1}` `i64@s` -> `(i64.le_s (i64.const 42) (i64.const 1))`
-- `{42u64 <= 1}` `i64@u` -> `(i64.le_u (i64.const 42) (i64.const 1))`
 
 ## License
 

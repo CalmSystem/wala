@@ -74,13 +74,12 @@ fn Emitter(comptime Writer: type) type {
             try e.uleb(e.m.funcs.len);
             for (e.m.funcs) |func| {
                 try e.byte(std.wasm.function_type);
-                try e.string(@bitCast(u.Bin, func.type.params));
-                // try e.uleb(func.type.params.len);
-                // for (func.type.params) |param|
-                //     try e.byte(std.wasm.valtype(param));
-                try e.uleb(func.type.returns.len);
-                for (func.type.returns) |ret|
-                    try e.byte(std.wasm.valtype(ret));
+                try e.uleb(func.type.params.len);
+                for (func.type.params) |param|
+                    try e.byte(std.wasm.valtype(param.lower()));
+                try e.uleb(func.type.results.len);
+                for (func.type.results) |ret|
+                    try e.byte(std.wasm.valtype(ret.lower()));
             }
         }
         fn importSection(e: E) !void {
@@ -105,7 +104,7 @@ fn Emitter(comptime Writer: type) type {
                     .memory => try e.limits(e.m.memory.?.size),
                     .global => {
                         const g = &e.m.globals[cur.index];
-                        try e.byte(std.wasm.valtype(g.type));
+                        try e.byte(std.wasm.valtype(g.type.lower()));
                         try e.byte(@boolToInt(g.mutable));
                     },
                 }

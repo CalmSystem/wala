@@ -56,6 +56,85 @@ pub const Module = struct {
     }
 };
 
+pub const Numtype = std.wasm.Valtype;
+pub const Valtype = Numtype;
+/// Interface type proposal definitions
+/// as https://github.com/WebAssembly/interface-types
+pub const Intertype = union(enum) {
+    f32,
+    f64,
+    s8,
+    u8,
+    s16,
+    u16,
+    s32,
+    u32,
+    s64,
+    u64,
+    char,
+    list: *const Intertype,
+    /// like struct
+    record: []const Field,
+    /// like union
+    variant: []const Field,
+
+    pub const Field = struct {
+        name: u.Txt,
+        id: ?u.Txt,
+        type: *const Intertype,
+    };
+
+    pub const Abbrv = union(enum) {
+        /// (list char)
+        string,
+        /// (record ("i" <intertype>)*) for i
+        tuple: []const Intertype,
+        /// (record (<name> bool))
+        flags: []const u.Txt,
+        /// (variant ("false") ("true"))
+        bool,
+        /// (variant (<name>)*)
+        @"enum": []const u.Txt,
+        /// (variant ("none") ("some" <intertype))
+        option: Intertype,
+        /// (variant ("i" <intertype>)*) for i
+        @"union": []const Intertype,
+        /// (variant ("ok" <intertype>?) ("error" <intertype>?))
+        expected: struct {
+            ok: ?Intertype,
+            err: ?Intertype,
+        },
+    };
+};
+
+/// Internal signature types
+pub const Sigtype = enum {
+    i32,
+    i64,
+    f32,
+    f64,
+    s8,
+    u8,
+    s16,
+    u16,
+    s32,
+    u32,
+    s64,
+    u64,
+
+    pub fn lower(it: Sigtype) Numtype {
+        return switch (it) {
+            .i32, .s8, .u8, .s16, .u16, .s32, .u32 => .i32,
+            .i64, .s64, .u64 => .i64,
+            .f32 => .f32,
+            .f64 => .f64,
+        };
+    }
+    pub fn eql(a: Sigtype, b: Sigtype) bool {
+        return @enumToInt(a) == @enumToInt(b);
+    }
+};
+
 pub const Func = struct {
     body: union(enum) {
         import: ImportName,
@@ -63,12 +142,12 @@ pub const Func = struct {
     },
     id: ?u.Txt,
     exports: []const ExportName = &[_]ExportName{},
-    type: Type,
+    type: Sig,
 
-    /// valtypes in arena
-    pub const Type = std.wasm.Type;
-    pub const valtype = std.wasm.valtype;
-    pub const Valtype = std.wasm.Valtype;
+    pub const Sig = struct {
+        params: []const Sigtype = &[_]Sigtype{},
+        results: []const Sigtype = &[_]Sigtype{},
+    };
 };
 
 pub const Table = struct {
@@ -93,7 +172,7 @@ pub const Global = struct {
     },
     id: ?u.Txt,
     exports: []const ExportName = &[_]ExportName{},
-    type: Func.Valtype,
+    type: Sigtype,
     mutable: bool,
 };
 
@@ -113,11 +192,11 @@ pub const Data = struct {
     id: ?u.Txt,
 };
 
-pub const Opcode = std.wasm.Opcode;
-pub const opcode = std.wasm.opcode;
 pub const Code = struct {
     bytes: u.Bin,
     relocs: []Linking.Reloc.Entry = &[_]Linking.Reloc.Entry{},
+
+    pub const Op = std.wasm.Opcode;
 };
 
 pub const ImportName = struct {

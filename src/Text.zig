@@ -101,10 +101,7 @@ fn _loadModule(ctx: *Ctx, exprs: []const Expr) !IR.Module {
         ctx.m.funcs[i] = .{
             .id = try ctx.dupeN(id),
             .body = if (i < I.funcs.firstLocal) .{ .import = .{ .module = "", .name = "" } } else .{ .code = .{ .bytes = "" } },
-            .type = .{
-                .params = &[_]std.wasm.Valtype{},
-                .returns = &[_]std.wasm.Valtype{},
-            },
+            .type = .{},
         };
     }
 
@@ -261,7 +258,7 @@ fn loadData(ctx: *Ctx, args: []Expr) !void {
             else
                 args[i .. i + 1];
 
-            const typ = IR.Func.Type{ .params = &[_]IR.Func.Valtype{}, .returns = &[_]IR.Func.Valtype{.i32} };
+            const typ = IR.Func.Sig{ .results = &[_]IR.Sigtype{.i32} };
             const offset = try Codegen.load(ctx, exprs, typ, null, null);
             d.body = .{ .active = .{
                 .mem = 0,
@@ -379,7 +376,7 @@ fn exportsImportNames(ctx: *Ctx, args: []const Expr, withImport: bool, fallbackE
     return ExportsImportName{ .exports = exports, .import = import, .remain = args[i..] };
 }
 const TypeUse = struct {
-    val: IR.Func.Type,
+    val: IR.Func.Sig,
     params: []?u.Txt,
     remain: []const Expr,
 
@@ -388,7 +385,7 @@ const TypeUse = struct {
     }
 };
 const AllocVatypes = struct {
-    types: []IR.Func.Valtype,
+    types: []IR.Sigtype,
     remain: []const Expr,
 };
 fn allocValtypes(ctx: *Ctx, args: []const Expr, comptime name: u.Txt) !AllocVatypes {
@@ -399,9 +396,9 @@ fn allocValtypes(ctx: *Ctx, args: []const Expr, comptime name: u.Txt) !AllocVaty
         //TODO: abbrev ident
         n += param.args.len;
     }
-    return AllocVatypes{ .types = try ctx.m_allocator().alloc(IR.Func.Valtype, n), .remain = args[i..] };
+    return AllocVatypes{ .types = try ctx.m_allocator().alloc(IR.Sigtype, n), .remain = args[i..] };
 }
-fn valtypes(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []IR.Func.Valtype, ids: ?[]?u.Txt, check: bool) ![]const Expr {
+fn valtypes(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []IR.Sigtype, ids: ?[]?u.Txt, check: bool) ![]const Expr {
     var i: usize = 0;
     var n: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -409,8 +406,9 @@ fn valtypes(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []IR.Fu
         if (ids) |slice|
             slice[n] = param.id;
         for (param.args) |arg| {
-            const v = try p.valtype(arg);
-            if (check and types[n] != v) {
+            self.at = arg;
+            const v = p.enumKv(IR.Sigtype)(arg) orelse return error.NotValtype;
+            if (check and !types[n].eql(v)) {
                 self.err = .{ .typeMismatch = .{
                     .expect = .{ .val = types[n] },
                     .got = .{ .val = v },
@@ -428,8 +426,8 @@ fn valtypes(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []IR.Fu
     return args[i..];
 }
 pub fn typeuse(ctx: *Ctx, args: []const Expr) !TypeUse {
-    var val_params: []IR.Func.Valtype = undefined;
-    var val_results: []IR.Func.Valtype = undefined;
+    var ps: []IR.Sigtype = undefined;
+    var rs: []IR.Sigtype = undefined;
     var templated = false;
     // TODO: templated type use
     // if (args.len > 0) {
@@ -440,17 +438,17 @@ pub fn typeuse(ctx: *Ctx, args: []const Expr) !TypeUse {
     if (!templated) {
         // typeuse abbrev
         const params = try ctx.allocValtypes(args, "param");
-        val_params = params.types;
+        ps = params.types;
 
         const results = try ctx.allocValtypes(params.remain, "result");
-        val_results = results.types;
+        rs = results.types;
     }
-    const params = try ctx.gpa.alloc(?u.Txt, val_params.len);
+    const params = try ctx.gpa.alloc(?u.Txt, ps.len);
 
-    var remain = try ctx.valtypes(args[@boolToInt(templated)..], "param", val_params, params, templated);
-    remain = try ctx.valtypes(remain, "result", val_results, null, templated);
+    var remain = try ctx.valtypes(args[@boolToInt(templated)..], "param", ps, params, templated);
+    remain = try ctx.valtypes(remain, "result", rs, null, templated);
 
-    return TypeUse{ .val = .{ .params = val_params, .returns = val_results }, .params = params, .remain = remain };
+    return TypeUse{ .val = .{ .params = ps, .results = rs }, .params = params, .remain = remain };
 }
 
 inline fn pop(ctx: *Ctx, comptime field: []const u8, import: bool) *@TypeOf(@field(ctx.m, field)[0]) {

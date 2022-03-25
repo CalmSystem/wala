@@ -95,8 +95,12 @@ pub fn nTypeuse(args: []const Expr) usize {
     }
     return i;
 }
-pub fn valtype(arg: Expr) !std.wasm.Valtype {
-    //TODO: reftype, vectype, interfacetype
-    const key = arg.val.asKeyword() orelse return error.NotValtype;
-    return std.meta.stringToEnum(std.wasm.Valtype, key) orelse return error.NotValtype;
+pub fn enumKv(comptime T: type) fn (arg: Expr) ?T {
+    return struct {
+        fn do(arg: Expr) ?T {
+            const key = arg.val.asKeyword() orelse return null;
+            return std.meta.stringToEnum(T, key);
+        }
+    }.do;
 }
+pub const numtype = enumKv(std.wasm.Valtype);
