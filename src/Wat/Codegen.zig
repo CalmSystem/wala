@@ -3,7 +3,7 @@ const std = @import("std");
 const Expr = @import("../Expr.zig");
 const IR = @import("../IR.zig");
 const p = @import("parse.zig");
-const Ctx = @import("../Text.zig");
+const Ctx = @import("../Wat.zig");
 
 ctx: *Ctx,
 bytes: std.ArrayListUnmanaged(u8) = .{},

@@ -39,5 +39,4 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: wala
-          retention-days: 5
           path: zig-out/bin/wala

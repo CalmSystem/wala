@@ -1,10 +1,10 @@
 # Wala
 
-A language trying to simplify [WebAssembly Text](https://developer.mozilla.org/en-US/docs/WebAssembly/Understanding_the_text_format) syntax while keeping the full expressiveness and retro-compatibility. Mixing many inspirations *(mainly Python and Racket)*.
+A language trying to simplify [WebAssembly Text](https://developer.mozilla.org/en-US/docs/WebAssembly/Understanding_the_text_format) syntax while keeping the full expressiveness and retro-compatibility. Unwittingly became a Zig toolchain for WASM.
 
 Pronounced `\vwa.la\` as in french voila *(meaning here it is)*. The exact acronym's composition is unspecified but can be interpreted as [WebAssembly](https://webassembly.org/) Language Adaptor or What Another Linguistic Anomaly.
 
-## Philosophy 
+## Philosophy
 
 It is implemented as a set of complementary extensions over standard [WebAssembly Text Format](https://webassembly.github.io/spec/core/text/index.html)
 

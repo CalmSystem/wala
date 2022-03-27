@@ -2,8 +2,9 @@ const u = @import("util.zig");
 const std = @import("std");
 const Expr = @import("Expr.zig");
 const IR = @import("IR.zig");
-const p = @import("Text/parse.zig");
-const Codegen = @import("Text/Codegen.zig");
+const p = @import("Wat/parse.zig");
+const Codegen = @import("Wat/Codegen.zig");
+pub const emit = @import("Wat/Emit.zig").emit;
 
 const MODULE_KEY = Expr.Val{ .keyword = "module" };
 const TopDefinition = enum { type, import, func, data, @"export", memory };
@@ -141,6 +142,7 @@ inline fn buildIndices(ctx: *Ctx, I: *Indices, expr: Expr, comptime importParent
             I.memory = func.id;
         },
         //global
+        .@"export" => {},
         //elem if (importParent) return error.BadImport;
         .data => {
             if (importParent) return error.BadImport;
@@ -464,5 +466,3 @@ inline fn pop(ctx: *Ctx, comptime field: []const u8, import: bool) *@TypeOf(@fie
 inline fn m_allocator(ctx: *Ctx) std.mem.Allocator {
     return ctx.m.arena.allocator();
 }
-
-pub const emit = @import("ToWat.zig").emit;

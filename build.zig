@@ -30,10 +30,10 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 
     const coverage = b.option(bool, "coverage", "Generate coverage with kcov") orelse false;
-    const kcov_args = &[_][]const u8{ "kcov", "--include-path=src", b.getInstallPath(.prefix, "coverage") };
+    const kcov_args = &[_][]const u8{ "kcov", "--include-path=src", "--path-strip-level=1", b.getInstallPath(.prefix, "coverage") };
 
     if (coverage) {
-        b.makePath(kcov_args[2]) catch unreachable;
+        b.makePath(kcov_args[kcov_args.len - 1]) catch unreachable;
         var args: [kcov_args.len + 1]?[]const u8 = undefined;
         for (kcov_args) |arg, i| args[i] = arg;
         // to get zig to use the --test-cmd-bin flag

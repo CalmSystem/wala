@@ -1,7 +1,7 @@
 const std = @import("std");
-const u = @import("util.zig");
-const Expr = @import("Expr.zig");
-const IR = @import("IR.zig");
+const u = @import("../util.zig");
+const Expr = @import("../Expr.zig");
+const IR = @import("../IR.zig");
 
 const Opt = struct {
     ids: bool = false,
