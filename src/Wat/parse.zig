@@ -79,8 +79,28 @@ pub inline fn i64s(str: u.Txt) !i64 {
     return i64_(kv(str));
 }
 
-pub fn asFuncNamed(arg: Expr, comptime name: u.Txt) ?Expr.Val.Func {
-    const func = arg.val.asFunc() orelse return null;
+pub const Func = struct {
+    name: u.Txt,
+    id: ?u.Txt = null,
+    args: []Expr = &[_]Expr{},
+};
+pub fn asFunc(arg: Expr) ?Func {
+    switch (arg.val) {
+        .list => |exprs| {
+            if (exprs.len > 0) {
+                if (exprs[0].val.asKeyword()) |name| {
+                    const id = if (exprs.len > 1) exprs[1].val.asId() else null;
+                    const offset = @as(usize, 1) + @boolToInt(id != null);
+                    return Func{ .name = name, .id = id, .args = exprs[offset..] };
+                }
+            }
+        },
+        else => {},
+    }
+    return null;
+}
+pub fn asFuncNamed(arg: Expr, comptime name: u.Txt) ?Func {
+    const func = asFunc(arg) orelse return null;
     return if (u.strEql(name, func.name)) func else null;
 }
 pub fn nTypeuse(args: []const Expr) usize {

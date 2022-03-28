@@ -54,6 +54,7 @@ pub fn build(b: *std.build.Builder) void {
         VerifyTest.help(.run),
         VerifyTest.hello(.run, null),
         VerifyTest.ok(.run, "samples/hello.wat", null),
+        VerifyTest.ok(.run, "samples/hello.flat.wat", null),
         VerifyTest.ok(.run, "test/hello.wasm", null),
         VerifyTest.ok(.run, "samples/fib.wala", &[_][]const u8{ "--", "--invoke", "fib", "20" }),
         VerifyTest.errTest(.parse, "fileNotFound.wat", null),

@@ -123,7 +123,7 @@ fn _loadModule(ctx: *Ctx, exprs: []const Expr) !IR.Module {
     return ctx.m;
 }
 inline fn buildIndices(ctx: *Ctx, I: *Indices, expr: Expr, comptime importParent: bool) !void {
-    const func = expr.val.asFunc() orelse return;
+    const func = p.asFunc(expr) orelse return;
     const section = std.meta.stringToEnum(TopDefinition, func.name) orelse return;
     if (func.args.len == 0) return error.Empty;
 
@@ -160,7 +160,7 @@ inline fn buildIndices(ctx: *Ctx, I: *Indices, expr: Expr, comptime importParent
 
 fn loadDefinition(ctx: *Ctx, expr: Expr) !void {
     ctx.at = expr;
-    const func = expr.val.asFunc() orelse return error.NonFunctionTopValue;
+    const func = p.asFunc(expr) orelse return error.NonFunctionTopValue;
     const section = std.meta.stringToEnum(TopDefinition, func.name) orelse return error.UnknownSection;
 
     switch (section) {
@@ -187,7 +187,7 @@ fn loadImport(ctx: *Ctx, args: []const Expr) !void {
     const name = try ctx.importName(args[0..2]);
 
     ctx.at = args[2];
-    const func = args[2].val.asFunc() orelse return error.BadImport;
+    const func = p.asFunc(args[2]) orelse return error.BadImport;
     const kind = std.meta.stringToEnum(TopDefinition, func.name) orelse return error.BadImport;
 
     switch (kind) {
@@ -249,7 +249,7 @@ fn loadData(ctx: *Ctx, args: []Expr) !void {
 
     var i: usize = 0;
     if (args.len > 0) {
-        if (args[0].val.asFunc()) |first| { // active
+        if (p.asFunc(args[0])) |first| { // active
             if (u.strEql("memory", first.name)) {
                 //TODO: read mem id
                 if (args.len < 2) return error.Empty;

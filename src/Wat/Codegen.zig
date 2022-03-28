@@ -12,7 +12,6 @@ locals: Locals,
 stack: std.ArrayListUnmanaged(Stack) = .{},
 
 const Codegen = @This();
-const F = Expr.Val.Func;
 const Hardtype = IR.Sigtype;
 
 pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]const Hardtype, ids: ?[]const ?u.Txt) !IR.Code {
@@ -34,11 +33,18 @@ pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]cons
         }
     }
 
-    for (insts) |i|
-        try self.inst(i);
+    try self.block(insts);
     try self.end(typ.results);
 
     return self.dupe(ctx.m.arena.allocator());
+}
+
+fn block(self: *Codegen, insts: []const Expr) !void {
+    var remain = insts;
+    while (remain.len > 0) {
+        self.ctx.at = remain[0];
+        remain = try self.popInst(remain);
+    }
 }
 
 const Error = error{
@@ -53,16 +59,19 @@ const Error = error{
     NotFound,
     NotPow2,
     NotValtype,
+    DuplicatedId,
 };
-fn inst(codegen: *Codegen, expr: Expr) Error!void {
-    codegen.ctx.at = expr;
-    const operation = codegen.extractFunc(expr.val) orelse return error.NotOp;
+
+fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
+    std.debug.assert(in.len > 0);
+    const folded = in[0].val == .list and in[0].val.list.len > 0;
+    const operation = (try codegen.extractFunc(if (folded) in[0].val.list else in, folded)) orelse return error.NotOp;
+    const folded_rem = if (folded) in[1..] else null;
 
     if (nameToOp(operation.name)) |op| {
-        const do = Op.get(op) orelse return;
+        const do = Op.get(op);
 
-        // folded expr
-        const folded = switch (do.narg) {
+        const nargs = switch (do.narg) {
             .sf => |f| f(operation),
             else => take: {
                 const n = switch (do.narg) {
@@ -74,25 +83,27 @@ fn inst(codegen: *Codegen, expr: Expr) Error!void {
                 break :take operation.args[n..];
             },
         };
-        for (folded) |fold|
-            try codegen.inst(fold);
+        if (folded) try codegen.block(nargs);
 
         try codegen.pops(do.stack.pop);
         try codegen.opcode(op);
-        try do.gen(codegen, operation);
+        const remain = (try do.gen(codegen, operation)) orelse
+            (folded_rem orelse nargs);
         try codegen.pushs(do.stack.push);
+
+        return remain;
     } else if (std.meta.stringToEnum(CustomBinOp, operation.name)) |op| {
-        for (operation.args) |fold|
-            try codegen.inst(fold);
+        if (folded) try codegen.block(operation.args);
 
         if (codegen.stack.items.len < 2)
             return error.TypeMismatch;
         var tr = codegen.stack.pop();
         const tl = codegen.stack.pop();
-        if (tl != .val or !tr.eqlOrCast(tl.val, codegen))
-            return Stack.err(codegen, tl, tr, null);
+        if (tl != .val or !tr.eqlOrCast(tl.val, codegen)) {
+            codegen.ctx.err = .{ .typeMismatch = .{ .expect = tl, .got = tr } };
+            return error.TypeMismatch;
+        }
 
-        // TODO: sign deduce
         const do = CustomBinOp.get(op);
 
         try codegen.opcode(switch (tl.val) {
@@ -116,30 +127,38 @@ fn inst(codegen: *Codegen, expr: Expr) Error!void {
             },
             .f32 => do.f32o,
             .f64 => do.f64o,
-        } orelse return Stack.err(codegen, if (do.f32o != null) Stack.of(.f32) else Stack.of(.i32), tl, null));
+        } orelse {
+            codegen.ctx.err = .{ .typeMismatch = .{ .expect = if (do.f32o != null) Stack.of(.f32) else Stack.of(.i32), .got = tl } };
+            return error.TypeMismatch;
+        });
         try codegen.push(if (do.bin) tl.val else .i32);
-    } else {
+
+        return folded_rem orelse operation.args;
+    } else if (!folded or operation.args.len == 0) { // keyword only
         if (operation.name.len > 3) { // Short const
             const head = operation.name[0 .. operation.name.len - 3];
             const tail = operation.name[operation.name.len - 3 ..];
-            if (std.meta.stringToEnum(Hardtype, tail)) |typ| switch (typ) {
-                .i32, .s32, .u32 => if (p.i32s(head) catch null) |i| {
-                    if (typ == .u32 and i < 0) return error.Signed;
-                    try codegen.opcode(.i32_const);
-                    try codegen.ileb(i);
+            if (std.meta.stringToEnum(Hardtype, tail)) |typ| {
+                switch (typ) {
+                    .i32, .s32, .u32 => if (p.i32s(head) catch null) |i| {
+                        if (typ == .u32 and i < 0) return error.Signed;
+                        try codegen.opcode(.i32_const);
+                        try codegen.ileb(i);
 
-                    return codegen.push(typ);
-                },
-                .i64, .s64, .u64 => if (p.i64s(head) catch null) |i| {
-                    if (typ == .u64 and i < 0) return error.Signed;
-                    try codegen.opcode(.i64_const);
-                    try codegen.ileb(i);
+                        try codegen.push(typ);
+                    },
+                    .i64, .s64, .u64 => if (p.i64s(head) catch null) |i| {
+                        if (typ == .u64 and i < 0) return error.Signed;
+                        try codegen.opcode(.i64_const);
+                        try codegen.ileb(i);
 
-                    return codegen.push(typ);
-                },
-                //TODO: remove else branch
-                else => @panic("WIP"),
-            };
+                        try codegen.push(typ);
+                    },
+                    //TODO: remove else branch
+                    else => @panic("WIP"),
+                }
+                return operation.args;
+            }
         }
 
         if (operation.name.len > 0) { // num
@@ -165,27 +184,37 @@ fn inst(codegen: *Codegen, expr: Expr) Error!void {
                     try codegen.opcode(.i64_const);
                     try codegen.push(.i64);
                 }
-                return codegen.ileb(i);
+                try codegen.ileb(i);
+
+                return operation.args;
             }
         }
         //TODO: more custom ops
 
-        return error.NotOp;
     }
+    return error.NotOp;
 }
-inline fn extractFunc(codegen: *Codegen, val: Expr.Val) ?F {
-    if (val.asFunc()) |f| return f;
-    if (val.asKeyword()) |name| return F{ .name = name };
-
-    switch (val) {
-        .list => |exprs| if (exprs.len > 0) if (exprs[0].val.asId()) |id| {
-            //TODO: detect collisions or specify resolution order
-            const kind = if (codegen.locals.find(id) != null) @tagName(IR.Code.Op.local_get) else if (codegen.ctx.m.findFunc(id) != null) @tagName(IR.Code.Op.call) else if (codegen.ctx.m.findGlobal(id) != null) @tagName(IR.Code.Op.global_get) else null;
-            if (kind) |name| return F{ .name = name, .id = id, .args = exprs[1..] };
-        },
-        else => {},
-    }
-    return null;
+const F = struct {
+    name: u.Txt,
+    args: []const Expr,
+    folded: bool,
+};
+inline fn extractFunc(codegen: *Codegen, in: []const Expr, folded: bool) !?F {
+    return switch (in[0].val) {
+        .keyword => |name| F{ .name = name, .args = in[1..], .folded = folded },
+        .id => |id| F{ .name = blk: {
+            const local = codegen.locals.find(id) != null;
+            const call = codegen.ctx.m.findFunc(id) != null;
+            const global = codegen.ctx.m.findGlobal(id) != null;
+            if (@boolToInt(local) + @boolToInt(call) + @boolToInt(global) > 1)
+                return error.DuplicatedId;
+            if (local) break :blk @tagName(.local_get);
+            if (call) break :blk @tagName(.call);
+            if (global) break :blk @tagName(.global_get);
+            return error.NotFound;
+        }, .args = in, .folded = folded },
+        else => null,
+    };
 }
 fn nameToOp(name: u.Txt) ?IR.Code.Op {
     var buf: [32]u8 = undefined;
@@ -204,7 +233,11 @@ const Op = struct {
         pop: []const Hardtype = &[_]Hardtype{},
         push: []const Hardtype = &[_]Hardtype{},
     } = .{},
-    gen: fn (self: *Codegen, func: F) Error!void = genNop,
+    gen: fn (self: *Codegen, func: F) Error!?[]const Expr = struct {
+        fn unit(_: *Codegen, _: F) !?[]const Expr {
+            return null;
+        }
+    }.unit,
 
     const Narg = union(enum) {
         n: usize,
@@ -212,22 +245,9 @@ const Op = struct {
         sf: fn (func: F) []const Expr,
 
         const one = @This(){ .n = 1 };
-        const id = @This(){ .nf = struct {
-            fn nf(f: F) usize {
-                return @boolToInt(f.id == null);
-            }
-        }.nf };
-        const all = @This(){ .nf = struct {
-            fn nf(f: F) usize {
-                return f.args.len;
-            }
-        }.nf };
     };
-    const genNop = struct {
-        fn nop(_: *Codegen, _: F) !void {}
-    }.nop;
 
-    inline fn get(op: IR.Code.Op) ?Op {
+    inline fn get(op: IR.Code.Op) Op {
         return switch (op) {
             .i32_const => comptime iNconst(.i32, false),
             .i64_const => comptime iNconst(.i64, true),
@@ -266,9 +286,9 @@ const Op = struct {
             .i64_reinterpret_f64 => comptime tNfrom(.i64, .f64),
             .f32_reinterpret_i32 => comptime tNfrom(.f32, .i32),
             .f64_reinterpret_i64 => comptime tNfrom(.f64, .i64),
-            .local_get => comptime Op{ .narg = Narg.id, .gen = struct {
-                fn gen(self: *Codegen, func: F) !void {
-                    const i = if (func.id) |id|
+            .local_get => comptime Op{ .narg = Narg.one, .gen = struct {
+                fn gen(self: *Codegen, func: F) !?[]const Expr {
+                    const i = if (func.args[0].val.asId()) |id|
                         self.locals.find(id) orelse
                             return error.NotFound
                     else
@@ -278,11 +298,13 @@ const Op = struct {
 
                     try self.uleb(i);
                     try self.push(typ);
+
+                    return null;
                 }
             }.gen },
-            .global_get => comptime Op{ .narg = Narg.id, .gen = struct {
-                fn gen(self: *Codegen, func: F) !void {
-                    const found = if (func.id) |id|
+            .global_get => comptime Op{ .narg = Narg.one, .gen = struct {
+                fn gen(self: *Codegen, func: F) !?[]const Expr {
+                    const found = if (func.args[0].val.asId()) |id|
                         self.ctx.m.findGlobal(id) orelse
                             return error.NotFound
                     else blk: {
@@ -292,12 +314,14 @@ const Op = struct {
 
                     try self.uleb(found.idx);
                     try self.push(found.ptr.type);
+
+                    return null;
                 }
             }.gen },
             .nop => comptime Op{},
-            .call => comptime Op{ .narg = Narg.id, .gen = struct {
-                fn gen(self: *Codegen, func: F) !void {
-                    const found = if (func.id) |id|
+            .call => comptime Op{ .narg = Narg.one, .gen = struct {
+                fn gen(self: *Codegen, func: F) !?[]const Expr {
+                    const found = if (func.args[0].val.asId()) |id|
                         self.ctx.m.findFunc(id) orelse
                             return error.NotFound
                     else blk: {
@@ -309,17 +333,22 @@ const Op = struct {
                     try self.pops(found.ptr.type.params);
                     try self.uleb(found.idx);
                     try self.pushs(found.ptr.type.results);
+
+                    return null;
                 }
             }.gen },
             .drop => comptime Op{ .gen = struct {
-                fn gen(self: *Codegen, _: F) !void {
+                fn gen(self: *Codegen, _: F) !?[]const Expr {
                     _ = try self.pop();
+                    return null;
                 }
             }.gen },
             .@"if" => comptime Op{
                 .narg = .{
                     .sf = struct {
                         fn sf(f: F) []const Expr {
+                            if (!f.folded) return &[_]Expr{};
+
                             //TODO: label
                             const i = p.nTypeuse(f.args);
                             if (i >= f.args.len) return &[_]Expr{};
@@ -334,7 +363,7 @@ const Op = struct {
                 },
                 .stack = .{ .pop = &[_]Hardtype{ibool} },
                 .gen = struct {
-                    fn gen(self: *Codegen, func: F) !void {
+                    fn gen(self: *Codegen, func: F) !?[]const Expr {
                         //TODO: label
                         const typ = try self.ctx.typeuse(func.args);
                         defer typ.deinit(self.ctx);
@@ -353,7 +382,7 @@ const Op = struct {
                         defer Stack.release(self, pre_stack);
 
                         //FIXME: need to know min stack
-                        try self.inst(then);
+                        try self.block(&[_]Expr{then});
 
                         if (typ.val.params.len > 0 or typ.val.results.len > 0) { // typed
                             std.debug.assert(pre_stack.len + typ.val.results.len - typ.val.params.len == self.stack.items.len);
@@ -382,19 +411,22 @@ const Op = struct {
                             defer Stack.release(self, then_stack);
 
                             try Stack.restore(self, pre_stack);
-                            try self.inst(do);
+                            try self.block(&[_]Expr{do});
 
                             try Stack.eqlSlice(self, self.stack.items, then_stack);
                         }
 
                         try self.opcode(.end);
+
+                        if (!func.folded) @panic("TODO: check for end");
+                        return null;
                     }
                 }.gen,
             },
             //TODO: remove else branch
-            else => err: {
-                std.log.warn("Unhandled {}. Ignoring it", .{op});
-                break :err null;
+            else => {
+                std.log.warn("Unhandled {}", .{op});
+                unreachable;
             },
         };
     }
@@ -403,8 +435,9 @@ const Op = struct {
         return .{ .narg = Op.Narg.one, .stack = .{ .push = &[_]Hardtype{val} }, .gen = struct {
             fn Gen(comptime Is64: bool) type {
                 return struct {
-                    fn gen(self: *Codegen, func: F) !void {
-                        return self.ileb(try if (Is64) p.i64_(func.args[0]) else p.i32_(func.args[0]));
+                    fn gen(self: *Codegen, func: F) !?[]const Expr {
+                        try self.ileb(try if (Is64) p.i64_(func.args[0]) else p.i32_(func.args[0]));
+                        return null;
                     }
                 };
             }
@@ -419,10 +452,11 @@ const Op = struct {
             .gen = struct {
                 fn Gen(comptime align__: u32) type {
                     return struct {
-                        fn gen(self: *Codegen, func: F) !void {
+                        fn gen(self: *Codegen, func: F) !?[]const Expr {
                             const arg = try memarg(func.args, align__);
                             try self.uleb(arg.align_);
                             try self.uleb(arg.offset);
+                            return null;
                         }
                     };
                 }

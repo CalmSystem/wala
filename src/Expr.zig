@@ -57,27 +57,6 @@ pub const Val = union(enum) {
         };
     }
 
-    pub const Func = struct {
-        name: u.Txt,
-        id: ?u.Txt = null,
-        args: []Expr = &[_]Expr{},
-    };
-    pub fn asFunc(self: Val) ?Func {
-        switch (self) {
-            .list => |exprs| {
-                if (exprs.len > 0) {
-                    if (exprs[0].val.asKeyword()) |name| {
-                        const id = if (exprs.len > 1) exprs[1].val.asId() else null;
-                        const offset: usize = if (id != null) 2 else 1;
-                        return Func{ .name = name, .id = id, .args = exprs[offset..] };
-                    }
-                }
-            },
-            else => {},
-        }
-        return null;
-    }
-
     pub inline fn asKeyword(self: Val) ?u.Txt {
         return switch (self) {
             .keyword => |keyword| keyword,
