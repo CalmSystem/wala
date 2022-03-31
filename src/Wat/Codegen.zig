@@ -41,12 +41,19 @@ pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]cons
     return self.dupe(ctx.arena.allocator());
 }
 
-fn block(self: *Codegen, insts: []const Expr) !void {
+fn blockUntil(self: *Codegen, insts: []const Expr, comptime endKeywords: []const u.Txt) ![]const Expr {
     var remain = insts;
     while (remain.len > 0) {
-        self.ctx.at = remain[0];
+        const e = remain[0].val.asList() orelse remain;
+        if (e.len > 0) if (e[0].val.asKeyword()) |kv|
+            inline for (endKeywords) |endK| if (u.strEql(endK, kv)) return remain;
+
         remain = try self.popInst(remain);
     }
+    return remain;
+}
+inline fn block(self: *Codegen, insts: []const Expr) !void {
+    _ = try self.blockUntil(insts, &[_]u.Txt{});
 }
 
 const Error = error{
@@ -68,11 +75,13 @@ const Error = error{
     BadImport,
     BadExport,
     ImportWithBody,
+    NoBlockEnd,
 };
 
 fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
     std.debug.assert(in.len > 0);
-    const folded = in[0].val == .list and in[0].val.list.len > 0;
+    codegen.ctx.at = in[0];
+    const folded = if (in[0].val.asList()) |l| l.len > 0 else false;
     const operation = (try codegen.extractFunc(if (folded) in[0].val.list else in, folded)) orelse return error.NotOp;
     const folded_rem = if (folded) in[1..] else null;
 
@@ -386,12 +395,7 @@ const Op = struct {
                         const typ = try self.ctx.typeuse(func.args);
                         defer typ.deinit(self.ctx);
                         if (typ.remain.len == 0) return error.Empty;
-
-                        //TODO: if else end syntax
-                        const has_else = typ.remain.len > 1;
-                        const j = typ.remain.len - 1 - @boolToInt(has_else);
-                        const then = typ.remain[j];
-                        const else_ = if (has_else) typ.remain[j + 1] else null;
+                        var remain = typ.remain;
 
                         const blocktype_offset = self.bytes.items.len;
                         try self.byte(std.wasm.block_empty);
@@ -400,7 +404,19 @@ const Op = struct {
                         defer Stack.release(self, pre_stack);
 
                         //FIXME: need to know min stack
-                        try self.block(&[_]Expr{then});
+                        //TODO: support folded else end syntax
+                        const has_else = if (func.folded) blk: {
+                            const has_folded_else = remain.len > 1;
+                            const j = typ.remain.len - 1 - @boolToInt(has_folded_else);
+                            try self.block(&[_]Expr{typ.remain[j]});
+                            break :blk has_folded_else;
+                        } else blk: {
+                            remain = try self.blockUntil(remain, &[_]u.Txt{ "else", "end" });
+                            if (remain.len == 0) return error.NoBlockEnd;
+                            const e = remain[0].val.asList() orelse remain;
+                            remain = remain[1..]; // pop .else or .end
+                            break :blk u.strEql("else", e[0].val.keyword);
+                        };
 
                         if (typ.val.params.len > 0 or typ.val.results.len > 0) { // typed
                             std.debug.assert(pre_stack.len + typ.val.results.len - typ.val.params.len == self.stack.items.len);
@@ -422,22 +438,34 @@ const Op = struct {
                             @panic("TODO: type from self.stack.items - pre_stack");
                         }
 
-                        if (else_) |do| {
+                        if (has_else) {
                             try self.opcode(.@"else");
 
                             const then_stack = try Stack.snapshot(self);
                             defer Stack.release(self, then_stack);
 
                             try Stack.restore(self, pre_stack);
-                            try self.block(&[_]Expr{do});
+
+                            if (func.folded) {
+                                try self.block(&[_]Expr{typ.remain[typ.remain.len - 1]});
+                            } else {
+                                remain = try self.blockUntil(remain, &[_]u.Txt{"end"});
+                                if (remain.len == 0) return error.NoBlockEnd;
+                                remain = remain[1..]; // pop .end
+                            }
 
                             try Stack.eqlSlice(self, self.stack.items, then_stack);
                         }
-
                         try self.opcode(.end);
 
-                        if (!func.folded) @panic("TODO: check for end");
-                        return null;
+                        return if (func.folded) null else remain;
+                    }
+                }.gen,
+            },
+            .@"else", .end => comptime Op{
+                .gen = struct {
+                    fn gen(_: *Codegen, _: F) !?[]const Expr {
+                        return error.NotOp;
                     }
                 }.gen,
             },

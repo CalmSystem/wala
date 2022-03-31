@@ -75,6 +75,12 @@ pub const Val = union(enum) {
             else => null,
         };
     }
+    pub inline fn asList(self: Val) ?[]const Expr {
+        return switch (self) {
+            .list => |l| l,
+            else => null,
+        };
+    }
 
     pub fn shallowEql(self: Val, other: Val) bool {
         if (@enumToInt(self) != @enumToInt(other)) return false;

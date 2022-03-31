@@ -515,7 +515,7 @@ fn valtypesCheck(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []
     while (try it.next()) |v| {
         if (ids) |slice|
             slice[n] = v.id;
-        
+
         if (!types[n].eql(v.v)) {
             self.err = .{ .typeMismatch = .{
                 .expect = .{ .val = types[n] },
