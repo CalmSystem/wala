@@ -8,16 +8,16 @@ pub const ulen = u32;
 pub const Module = struct {
     arena: std.heap.ArenaAllocator,
 
-    funcs: []Func = &[_]Func{},
-    tables: []Table = &[_]Table{},
+    funcs: []const Func = &[_]Func{},
+    tables: []const Table = &[_]Table{},
     memory: ?Memory = null,
-    globals: []Global = &[_]Global{},
+    globals: []const Global = &[_]Global{},
     start: ?ulen = null,
-    elements: []Elem = &[_]Elem{},
-    datas: []Data = &[_]Data{},
+    elements: []const Elem = &[_]Elem{},
+    datas: []const Data = &[_]Data{},
 
     //linking: Linking,
-    customs: []Section.Custom = &[_]Section.Custom{},
+    customs: []const Section.Custom = &[_]Section.Custom{},
 
     pub fn init(allocator: std.mem.Allocator) Module {
         return .{ .arena = std.heap.ArenaAllocator.init(allocator) };
@@ -37,22 +37,6 @@ pub const Module = struct {
     }
     pub fn exports(self: *const Module) iters.Export {
         return .{ .m = self };
-    }
-
-    pub fn findFunc(self: *const Module, id: u.Txt) ?FoundId(Func) {
-        return findById(Func, self.funcs, id);
-    }
-    pub fn findGlobal(self: *const Module, id: u.Txt) ?FoundId(Global) {
-        return findById(Global, self.globals, id);
-    }
-    pub fn FoundId(comptime T: type) type {
-        return struct { ptr: *const T, idx: u32 };
-    }
-    fn findById(comptime T: type, list: []const T, id: u.Txt) ?FoundId(T) {
-        return for (list) |*t, i| {
-            if (t.id != null and u.strEql(id, t.id.?))
-                break .{ .ptr = t, .idx = @truncate(ulen, i) };
-        } else null;
     }
 };
 

@@ -6,30 +6,30 @@ const p = @import("Wat/parse.zig");
 const Codegen = @import("Wat/Codegen.zig");
 pub const emit = @import("Wat/Emit.zig").emit;
 
-const MODULE_KEY = Expr.Val{ .keyword = "module" };
-const TopDefinition = enum { type, import, func, data, @"export", memory };
+const TopDefinition = enum { type, import, func, data, @"export", memory, table, elem, global };
 
-gpa: std.mem.Allocator,
-m: IR.Module,
+/// child_allocator is used as gpa()
+arena: std.heap.ArenaAllocator,
+/// Work in progress IR.Module
 I: struct {
-    funcs: IndexPos = .{},
-    datas: usize = 0,
+    // (type (func ...))
+    funcTypes: UnmanagedIndex(IR.Func.Sig) = .{},
+    funcs: UnmanagedIndex(FuncProgress) = .{},
+    funcImportCount: usize = 0,
+    datas: UnmanagedIndex(union(enum) {
+        args: []const Expr,
+        done: IR.Data,
+    }) = .{},
+    globals: UnmanagedIndex(void) = .{},
+    exports: std.ArrayListUnmanaged([]const Expr) = .{},
+
+    memory: ?IR.Memory = null,
 } = .{},
 /// Parsing pointer
 at: ?Expr = null,
 err: ErrData = null,
 
 const Ctx = @This();
-
-const Indices = struct {
-    funcs: UnmanagedImportableIndex = .{},
-    memory: ?u.Txt = null,
-    datas: UnmanagedIndex = .{},
-
-    pub fn deinit(I: *Indices, allocator: std.mem.Allocator) void {
-        I.funcs.it.deinit(allocator);
-    }
-};
 
 pub const ErrData = ?union(enum) {
     typeMismatch: struct {
@@ -66,7 +66,7 @@ pub fn tryLoad(exprs: []const Expr, allocator: std.mem.Allocator, loader: anytyp
 
     var module: ?IR.Module = null;
     for (exprs) |expr| {
-        const func = p.asFuncNamed(expr, MODULE_KEY.keyword) orelse continue;
+        const func = p.asFuncNamed(expr, "module") orelse continue;
         const child = switch (tryLoadModule(func.args, allocator)) {
             .ok => |m| m,
             .err => |err| return .{ .err = err },
@@ -84,7 +84,7 @@ pub fn tryLoad(exprs: []const Expr, allocator: std.mem.Allocator, loader: anytyp
     tryLoadModule(exprs, allocator);
 }
 fn tryLoadModule(exprs: []const Expr, allocator: std.mem.Allocator) Result {
-    var ctx = Ctx{ .gpa = allocator, .m = IR.Module.init(allocator) };
+    var ctx = Ctx{ .arena = std.heap.ArenaAllocator.init(allocator) };
     const module = ctx._loadModule(exprs) catch |err|
         return .{ .err = .{ .kind = err, .data = ctx.err, .at = ctx.at } };
     return .{ .ok = module };
@@ -92,97 +92,121 @@ fn tryLoadModule(exprs: []const Expr, allocator: std.mem.Allocator) Result {
 fn _loadModule(ctx: *Ctx, exprs: []const Expr) !IR.Module {
     // name = if (exprs[0] dollared) ident else "env"
 
-    var I: Indices = .{};
     for (exprs) |expr|
-        try ctx.buildIndices(&I, expr, false);
+        try ctx.buildIndex(expr);
 
-    ctx.I.funcs.nextLocal = I.funcs.firstLocal;
-    ctx.m.funcs = try ctx.m_allocator().alloc(IR.Func, I.funcs.it.items.len);
-    for (I.funcs.it.items) |id, i| {
-        ctx.m.funcs[i] = .{
-            .id = try ctx.dupeN(id),
-            .body = if (i < I.funcs.firstLocal) .{ .import = .{ .module = "", .name = "" } } else .{ .code = .{ .bytes = "" } },
-            .type = .{},
-        };
+    const datas = try ctx.m_allocator().alloc(IR.Data, ctx.I.datas.items.len);
+    for (ctx.I.datas.items) |*data, i| {
+        const done = try ctx.loadData(data.val.args, data.id);
+        data.val = .{ .done = done };
+        datas[i] = done;
     }
 
-    if (I.memory != null) {
-        ctx.m.memory = .{ .id = try ctx.dupeN(I.memory), .size = .{ .min = 0, .max = null } };
+    for (ctx.I.exports.items) |expr|
+        try ctx.loadExport(expr);
+
+    const funcs = try ctx.m_allocator().alloc(IR.Func, ctx.I.funcs.items.len);
+    for (ctx.I.funcs.items) |*f, i| {
+        if (i > ctx.I.funcImportCount and f.val == .unused and p.asFuncNamed(f.val.unused.args[0], "export") == null)
+            std.log.warn("Unused func {}({s})", .{ i, f.id });
+        try ctx.loadFunc(&f.val, f.id);
+        funcs[i] = f.val.done;
     }
 
-    ctx.m.datas = try ctx.m_allocator().alloc(IR.Data, I.datas.items.len);
-    for (I.datas.items) |id, i| {
-        ctx.m.datas[i] = .{ .id = try ctx.dupeN(id), .body = .{ .passive = "" } };
-    }
+    ctx.I.funcTypes.deinit(ctx.gpa());
+    ctx.I.funcs.deinit(ctx.gpa());
+    ctx.I.datas.deinit(ctx.gpa());
+    ctx.I.globals.deinit(ctx.gpa());
+    ctx.I.exports.deinit(ctx.gpa());
 
-    I.deinit(ctx.gpa);
+    return IR.Module{
+        .arena = ctx.arena,
 
-    for (exprs) |expr|
-        try ctx.loadDefinition(expr);
+        .funcs = funcs,
+        .tables = &[_]IR.Table{},
+        .memory = ctx.I.memory,
+        .globals = &[_]IR.Global{},
+        .start = null,
+        .elements = &[_]IR.Elem{},
+        .datas = datas,
 
-    return ctx.m;
+        //.linking = Linking,
+        .customs = &[_]IR.Section.Custom{},
+    };
 }
-inline fn buildIndices(ctx: *Ctx, I: *Indices, expr: Expr, comptime importParent: bool) !void {
-    const func = p.asFunc(expr) orelse return;
-    const section = std.meta.stringToEnum(TopDefinition, func.name) orelse return;
+inline fn buildIndex(ctx: *Ctx, expr: Expr) !void {
+    const func = p.asFunc(expr) orelse return error.NotFuncTopValue;
+    const section = std.meta.stringToEnum(TopDefinition, func.name) orelse return error.UnknownSection;
     if (func.args.len == 0) return error.Empty;
 
     ctx.at = expr;
     switch (section) {
-        // .type => {
-        //     if (importParent) return error.BadImport;
-        //     //TODO: add to index
-        // },
-        .func => {
-            const importAbbrev = try hasImportAbbrev(func.args, importParent);
-            try I.funcs.append(ctx.gpa, func.id, importParent or importAbbrev);
-        },
-        //table
-        .memory => {
-            I.memory = func.id;
-        },
-        //global
-        .@"export" => {},
-        //elem if (importParent) return error.BadImport;
+        .type => try ctx.buildType(func),
+        .func => try ctx.buildFunc(func, null),
+        .table => @panic("TODO:"),
+        .memory => try ctx.buildMemory(func, null),
+        .global => @panic("TODO:"),
+        .@"export" => try ctx.I.exports.append(ctx.gpa(), func.args),
+        .elem => @panic("TODO:"),
         .data => {
-            if (importParent) return error.BadImport;
-            try I.datas.append(ctx.gpa, func.id);
+            try indexFreeId(ctx.I.datas, func.id);
+            try ctx.I.datas.append(ctx.gpa(), .{ .id = try ctx.dupeN(func.id), .val = .{ .args = func.args } });
         },
-        .import => {
-            if (importParent) return error.BadImport;
-            if (func.args.len != 3) return error.Empty;
-            try ctx.buildIndices(I, func.args[2], true);
-        },
-        //TODO: remove else branch
-        else => std.log.warn("Unhandled section {s} index. Ignoring it", .{func.name}),
+        .import => try ctx.buildImport(func.args),
     }
 }
 
-fn loadDefinition(ctx: *Ctx, expr: Expr) !void {
-    ctx.at = expr;
-    const func = p.asFunc(expr) orelse return error.NonFunctionTopValue;
-    const section = std.meta.stringToEnum(TopDefinition, func.name) orelse return error.UnknownSection;
-
-    switch (section) {
-        .type => try ctx.loadType(func.args),
-        .import => try ctx.loadImport(func.args),
-        .func => try ctx.loadFunc(func.args, null),
-        //TODO: table
-        .memory => try ctx.loadMemory(func.args, null),
-        //global
-        //export
-        //start
-        //elem
-        .data => try ctx.loadData(func.args),
-        //TODO: remove else branch
-        else => std.log.warn("Unhandled section {} {}. Ignoring it", .{ section, func }),
+inline fn buildType(ctx: *Ctx, func: p.Func) !void {
+    if (func.args.len > 1) return error.TooMany;
+    const inner = p.asFuncNamed(func.args[0], "func") orelse return error.NotFunc;
+    // FIXME: type template isn't legal
+    const use = try ctx.typeuse(inner.args);
+    use.deinit(ctx);
+    if (use.remain.len > 0) return error.TooMany;
+    try indexFreeId(ctx.I.funcTypes, func.id);
+    try ctx.I.funcTypes.append(ctx.gpa(), .{ .id = func.id, .val = use.val });
+}
+const FuncProgress = union(enum) {
+    unused: struct {
+        args: []const Expr,
+        importParent: ?IR.ImportName,
+    },
+    typed: struct {
+        it: IR.Func,
+        insts: []const Expr,
+        params: []const ?u.Txt,
+        wip: bool = false,
+    },
+    done: IR.Func,
+};
+fn buildFunc(ctx: *Ctx, func: p.Func, importParent: ?IR.ImportName) !void {
+    const importAbbrev = try hasImportAbbrev(func.args, importParent != null);
+    try indexFreeId(ctx.I.funcs, func.id);
+    const f = IndexField(FuncProgress){ .id = try ctx.dupeN(func.id), .val = .{ .unused = .{ .args = func.args, .importParent = importParent } } };
+    if (importAbbrev or importParent != null) {
+        try ctx.I.funcs.insert(ctx.gpa(), ctx.I.funcImportCount, f);
+        ctx.I.funcImportCount += 1;
+    } else {
+        try ctx.I.funcs.append(ctx.gpa(), f);
     }
 }
+fn buildMemory(ctx: *Ctx, func: p.Func, importParent: ?IR.ImportName) !void {
+    if (ctx.I.memory != null) return error.MultipleMemory;
 
-fn loadType(_: *Ctx, _: []const Expr) !void {
-    // Already done
+    const importAbbrev = try hasImportAbbrev(func.args, importParent != null);
+    const io = try ctx.exportsImportNames(func.args, importAbbrev, func.id);
+
+    //TODO: data abbrev
+    const memtyp = try limit(io.remain);
+
+    ctx.I.memory = .{
+        .id = try ctx.dupeN(func.id),
+        .exports = io.exports,
+        .import = importParent orelse io.import,
+        .size = memtyp,
+    };
 }
-fn loadImport(ctx: *Ctx, args: []const Expr) !void {
+inline fn buildImport(ctx: *Ctx, args: []const Expr) !void {
     if (args.len != 3) return error.Empty;
     const name = try ctx.importName(args[0..2]);
 
@@ -191,61 +215,109 @@ fn loadImport(ctx: *Ctx, args: []const Expr) !void {
     const kind = std.meta.stringToEnum(TopDefinition, func.name) orelse return error.BadImport;
 
     switch (kind) {
-        .func => try ctx.loadFunc(func.args, name),
-        //table
-        .memory => try ctx.loadMemory(func.args, name),
-        //global
+        .func => try ctx.buildFunc(func, name),
+        .table => @panic("TODO:"),
+        .memory => try ctx.buildMemory(func, name),
+        .global => @panic("TODO:"),
         else => return error.BadImport,
     }
 }
-fn loadFunc(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void {
-    const importAbbrev = try hasImportAbbrev(args, importParent != null);
-    const f: *IR.Func = ctx.pop("funcs", importParent != null or importAbbrev);
 
-    const io = try ctx.exportsImportNames(args, importAbbrev, f.id);
-    f.exports = io.exports;
-    if (io.import orelse importParent) |body|
-        f.body = .{ .import = body };
+pub fn typeFunc(ctx: *Ctx, fp: *FuncProgress, id: ?u.Txt) !*IR.Func {
+    return switch (fp.*) {
+        .done => &fp.done,
+        .typed => &fp.typed.it,
+        .unused => |f| {
+            if (f.args.len > 0) ctx.at = f.args[0];
+            const importAbbrev = try hasImportAbbrev(f.args, f.importParent != null);
+            const io = try ctx.exportsImportNames(f.args, importAbbrev, id);
 
-    var typ = try ctx.typeuse(io.remain);
-    defer typ.deinit(ctx);
-    f.type = typ.val;
+            var typ = try ctx.typeuse(io.remain);
 
-    if (importParent != null or importAbbrev) {
-        if (typ.remain.len > 0)
-            return error.ImportWithBody;
-    } else {
-        // locals
-        const locals = try ctx.allocValtypes(typ.remain, "local");
-        const n_p = typ.params.len;
-        typ.params = try ctx.gpa.realloc(typ.params, n_p + locals.types.len);
+            if (f.importParent orelse io.import) |import| {
+                typ.deinit(ctx);
+                if (typ.remain.len > 0)
+                    return error.ImportWithBody;
 
-        const insts = try ctx.valtypes(typ.remain, "local", locals.types, typ.params[n_p..], false);
-
-        const code = try Codegen.load(ctx, insts, typ.val, locals.types, typ.params);
-        f.body = .{ .code = code };
-    }
-}
-//...
-fn loadMemory(ctx: *Ctx, args: []const Expr, importParent: ?IR.ImportName) !void {
-    const importAbbrev = try hasImportAbbrev(args, importParent != null);
-    const id = if (ctx.m.memory) |m| m.id else null;
-    const io = try ctx.exportsImportNames(args, importAbbrev, id);
-
-    //TODO: data abbrev
-    const memtyp = try limit(io.remain);
-
-    ctx.m.memory = .{
-        .id = id,
-        .exports = io.exports,
-        .import = io.import orelse importParent,
-        .size = memtyp,
+                fp.* = .{ .done = .{
+                    .body = .{ .import = import },
+                    .id = id,
+                    .exports = io.exports,
+                    .type = typ.val,
+                } };
+                return &fp.done;
+            } else {
+                fp.* = .{ .typed = .{ .it = .{
+                    .body = .{ .code = .{ .bytes = "" } },
+                    .id = id,
+                    .exports = io.exports,
+                    .type = typ.val,
+                }, .insts = typ.remain, .params = typ.params } };
+                return &fp.typed.it;
+            }
+        },
     };
 }
-//...
-fn loadData(ctx: *Ctx, args: []Expr) !void {
-    const d: *IR.Data = &ctx.m.datas[ctx.I.datas];
-    ctx.I.datas += 1;
+fn loadFunc(ctx: *Ctx, fp: *FuncProgress, id: ?u.Txt) !void {
+    switch (fp.*) {
+        .done => return,
+        .typed => {},
+        .unused => {
+            _ = try ctx.typeFunc(fp, id);
+            if (fp.* == .done) return;
+        },
+    }
+    const t = &fp.typed;
+    if (t.wip) return error.DependencyLoop;
+    t.wip = true;
+
+    if (t.insts.len > 0) ctx.at = t.insts[0];
+    // locals
+    const locals = try ctx.valtypesAlloc(t.insts, "local");
+
+    var local_ids = try constSliceExpand(?u.Txt, ctx.gpa(), &t.params, locals.types.len);
+    defer ctx.gpa().free(t.params);
+
+    const insts = try ctx.valtypesRead(t.insts, "local", locals.types, local_ids);
+
+    const code = try Codegen.load(ctx, insts, t.it.type, locals.types, t.params);
+    t.it.body = .{ .code = code };
+    fp.* = .{ .done = t.it };
+}
+inline fn loadExport(ctx: *Ctx, args: []const Expr) !void {
+    if (args.len != 2) return error.Empty;
+    const name = try ctx.string(args[0]);
+
+    ctx.at = args[1];
+    const func = p.asFunc(args[1]) orelse return error.BadExport;
+    const kind = std.meta.stringToEnum(TopDefinition, func.name) orelse return error.BadExport;
+
+    const exports: *[]const IR.ExportName = switch (kind) {
+        .func => blk: {
+            const i = try indexFindByF(ctx.I.funcs, func);
+            const fp = &ctx.I.funcs.items[i];
+            const f = try ctx.typeFunc(&fp.val, fp.id);
+            break :blk &f.exports;
+        },
+        .table => @panic("TODO:"),
+        .memory => blk: {
+            const m = ctx.I.memory orelse return error.NotFound;
+            if (func.id) |id| {
+                if (m.id == null or !u.strEql(id, m.id.?))
+                    return error.NotFound;
+            } else if (func.args.len != 1 or (try p.u32_(func.args[0])) != 0)
+                return error.NotFound;
+            break :blk &ctx.I.memory.?.exports;
+        },
+        .global => @panic("TODO:"),
+        else => return error.BadExport,
+    };
+
+    const new = try constSliceExpand(IR.ExportName, ctx.m_allocator(), exports, 1);
+    new[0] = name;
+}
+fn loadData(ctx: *Ctx, args: []const Expr, id: ?u.Txt) !IR.Data {
+    var d = IR.Data{ .id = id, .body = .{ .passive = "" } };
 
     var i: usize = 0;
     if (args.len > 0) {
@@ -288,32 +360,35 @@ fn loadData(ctx: *Ctx, args: []Expr) !void {
         .active => |*act| act.content = datastring,
         .passive => |*pas| pas.* = datastring,
     }
+
+    return d;
 }
 
-const UnmanagedIndex = std.ArrayListUnmanaged(?u.Txt);
-const UnmanagedImportableIndex = struct {
-    it: UnmanagedIndex = .{},
-    firstLocal: usize = 0,
-
-    fn append(self: *UnmanagedImportableIndex, allocator: std.mem.Allocator, id: ?u.Txt, imported: bool) !void {
-        if (imported) {
-            try self.it.insert(allocator, self.firstLocal, id);
-            self.firstLocal += 1;
-        } else {
-            try self.it.append(allocator, id);
-        }
+fn IndexField(comptime Val: type) type {
+    return struct { id: ?u.Txt, val: Val };
+}
+fn UnmanagedIndex(comptime Val: type) type {
+    return std.ArrayListUnmanaged(IndexField(Val));
+}
+inline fn indexFreeId(idx: anytype, may_id: ?u.Txt) !void {
+    if (indexFindById(idx, may_id orelse return) != null) return error.DuplicatedId;
+}
+pub fn indexFindById(idx: anytype, id: u.Txt) ?u32 {
+    for (idx.items) |item, i|
+        if (item.id) |other| if (u.strEql(id, other))
+            return @truncate(u32, i);
+    return null;
+}
+inline fn indexFindByF(idx: anytype, f: p.Func) !u32 {
+    if (f.id) |id| {
+        return indexFindById(idx, id) orelse error.NotFound;
+    } else {
+        if (f.args.len != 1) return error.Empty;
+        const i = try p.u32_(f.args[0]);
+        if (i >= idx.items.len) return error.NotFound;
+        return i;
     }
-    inline fn at(self: UnmanagedImportableIndex, idx: usize) ?u.Txt {
-        return if (idx < self.it.items.len)
-            self.it.items[idx]
-        else
-            null;
-    }
-};
-const IndexPos = struct {
-    nextImport: usize = 0,
-    nextLocal: usize = 1 << 32,
-};
+}
 
 fn limit(args: []const Expr) !std.wasm.Limits {
     return switch (args.len) {
@@ -341,7 +416,7 @@ inline fn dupeN(ctx: *Ctx, str: ?u.Bin) !?u.Bin {
 }
 fn importName(ctx: *Ctx, args: []const Expr) !IR.ImportName {
     if (args.len < 2) return error.Empty;
-    if (args.len > 2) return error.TooMay;
+    if (args.len > 2) return error.TooMany;
     return IR.ImportName{
         .module = try ctx.string(args[0]),
         .name = try ctx.string(args[1]),
@@ -363,8 +438,8 @@ fn exportsImportNames(ctx: *Ctx, args: []const Expr, withImport: bool, fallbackE
         ctx.at = args[i];
         exports[i] = switch (expor.args.len) {
             1 => try ctx.string(expor.args[0]),
-            0 => fallbackExport orelse return error.BadExport,
-            else => return error.BadExport,
+            0 => fallbackExport orelse return error.Empty,
+            else => return error.TooMany,
         };
     }
 
@@ -383,74 +458,99 @@ const TypeUse = struct {
     remain: []const Expr,
 
     pub inline fn deinit(self: TypeUse, ctx: *Ctx) void {
-        ctx.gpa.free(self.params);
+        ctx.gpa().free(self.params);
     }
 };
+fn ValtypesIter(comptime name: u.Txt) type {
+    return struct {
+        i: usize = 0,
+        j: usize = 0,
+        args: []const Expr,
+
+        fn next(it: *@This()) !?Ret {
+            while (it.i < it.args.len) : (it.i += 1) {
+                const param = p.asFuncNamed(it.args[it.i], name) orelse break;
+                if (it.j < param.args.len) {
+                    const id = if (it.j == 0) param.id else null;
+                    //TODO: abbrev ident
+                    const v = p.enumKv(IR.Sigtype)(param.args[it.j]) orelse return error.NotValtype;
+                    it.j += 1;
+                    return Ret{ .id = id, .v = v };
+                }
+                it.j = 0;
+            }
+            return null;
+        }
+        const Ret = struct {
+            id: ?u.Txt,
+            v: IR.Sigtype,
+        };
+    };
+}
 const AllocVatypes = struct {
     types: []IR.Sigtype,
     remain: []const Expr,
 };
-fn allocValtypes(ctx: *Ctx, args: []const Expr, comptime name: u.Txt) !AllocVatypes {
-    var i: usize = 0;
+fn valtypesAlloc(ctx: *Ctx, args: []const Expr, comptime name: u.Txt) !AllocVatypes {
+    var it = ValtypesIter(name){ .args = args };
     var n: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const param = p.asFuncNamed(args[i], name) orelse break;
-        //TODO: abbrev ident
-        n += param.args.len;
-    }
-    return AllocVatypes{ .types = try ctx.m_allocator().alloc(IR.Sigtype, n), .remain = args[i..] };
+    while ((try it.next()) != null) n += 1;
+    return AllocVatypes{ .types = try ctx.m_allocator().alloc(IR.Sigtype, n), .remain = args[it.i..] };
 }
-fn valtypes(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []IR.Sigtype, ids: ?[]?u.Txt, check: bool) ![]const Expr {
-    var i: usize = 0;
+fn valtypesRead(_: *Ctx, args: []const Expr, comptime name: u.Txt, types: []IR.Sigtype, ids: ?[]?u.Txt) ![]const Expr {
+    var it = ValtypesIter(name){ .args = args };
     var n: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const param = p.asFuncNamed(args[i], name) orelse break;
+    while (try it.next()) |v| {
         if (ids) |slice|
-            slice[n] = param.id;
-        for (param.args) |arg| {
-            self.at = arg;
-            const v = p.enumKv(IR.Sigtype)(arg) orelse return error.NotValtype;
-            if (check and !types[n].eql(v)) {
-                self.err = .{ .typeMismatch = .{
-                    .expect = .{ .val = types[n] },
-                    .got = .{ .val = v },
-                    .index = n,
-                } };
-                return error.TypeMismatch;
-            }
-
-            types[n] = v;
-            n += 1;
-            //TODO: abbrev ident
-        }
+            slice[n] = v.id;
+        types[n] = v.v;
+        n += 1;
     }
     std.debug.assert(n == types.len);
-    return args[i..];
+    return args[it.i..];
+}
+fn valtypesCheck(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []const IR.Sigtype, ids: ?[]?u.Txt) ![]const Expr {
+    var it = ValtypesIter(name){ .args = args };
+    var n: usize = 0;
+    while (try it.next()) |v| {
+        if (ids) |slice|
+            slice[n] = v.id;
+        
+        if (!types[n].eql(v.v)) {
+            self.err = .{ .typeMismatch = .{
+                .expect = .{ .val = types[n] },
+                .got = .{ .val = v.v },
+                .index = n,
+            } };
+            return error.TypeMismatch;
+        }
+        n += 1;
+    }
+    return args[it.i..];
 }
 pub fn typeuse(ctx: *Ctx, args: []const Expr) !TypeUse {
-    var ps: []IR.Sigtype = undefined;
-    var rs: []IR.Sigtype = undefined;
-    var templated = false;
-    // TODO: templated type use
-    // if (args.len > 0) {
-    //     if (p.asFuncNamed(args[0], "type")) |func| {
-    //         _ = func;
-    //     }
-    // }
-    if (!templated) {
-        // typeuse abbrev
-        const params = try ctx.allocValtypes(args, "param");
-        ps = params.types;
+    if (args.len > 0) if (p.asFuncNamed(args[0], "type")) |func| {
+        const i = try indexFindByF(ctx.I.funcTypes, func);
+        const sig = ctx.I.funcTypes.items[i].val;
 
-        const results = try ctx.allocValtypes(params.remain, "result");
-        rs = results.types;
-    }
-    const params = try ctx.gpa.alloc(?u.Txt, ps.len);
+        const params = try ctx.gpa().alloc(?u.Txt, sig.params.len);
 
-    var remain = try ctx.valtypes(args[@boolToInt(templated)..], "param", ps, params, templated);
-    remain = try ctx.valtypes(remain, "result", rs, null, templated);
+        var remain = try ctx.valtypesCheck(args[1..], "param", sig.params, params);
+        remain = try ctx.valtypesCheck(remain, "result", sig.results, null);
 
-    return TypeUse{ .val = .{ .params = ps, .results = rs }, .params = params, .remain = remain };
+        return TypeUse{ .val = sig, .params = params, .remain = remain };
+    };
+
+    // typeuse abbrev
+    const ps = try ctx.valtypesAlloc(args, "param");
+    const rs = try ctx.valtypesAlloc(ps.remain, "result");
+
+    const params = try ctx.gpa().alloc(?u.Txt, ps.types.len);
+
+    var remain = try ctx.valtypesRead(args, "param", ps.types, params);
+    remain = try ctx.valtypesRead(remain, "result", rs.types, null);
+
+    return TypeUse{ .val = .{ .params = ps.types, .results = rs.types }, .params = params, .remain = remain };
 }
 
 inline fn pop(ctx: *Ctx, comptime field: []const u8, import: bool) *@TypeOf(@field(ctx.m, field)[0]) {
@@ -464,5 +564,14 @@ inline fn pop(ctx: *Ctx, comptime field: []const u8, import: bool) *@TypeOf(@fie
     }
 }
 inline fn m_allocator(ctx: *Ctx) std.mem.Allocator {
-    return ctx.m.arena.allocator();
+    return ctx.arena.allocator();
+}
+inline fn gpa(ctx: *Ctx) std.mem.Allocator {
+    return ctx.arena.child_allocator;
+}
+
+inline fn constSliceExpand(comptime T: type, allocator: std.mem.Allocator, slice: *[]const T, n: usize) ![]T {
+    const resized = try allocator.realloc(@intToPtr(*[]T, @ptrToInt(slice)).*, slice.len + n);
+    slice.* = resized;
+    return resized[resized.len - n ..];
 }

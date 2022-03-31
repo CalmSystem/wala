@@ -2,8 +2,8 @@ func $fib export()
   param $n u64
   result u64
   nop ;; check for optimizations
-  if (result u64) {($n) <= 2}
+  if (result u64) {$n <= 2}
     1u64
     +
-      $fib{($n) - 2}
-      $fib{($n) - 1}
+      $fib{$n - 2}
+      $fib{$n - 1}

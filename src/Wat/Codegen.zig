@@ -20,9 +20,9 @@ pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]cons
         .locals = .{ .first = typ.params, .second = localTyps orelse &[_]Hardtype{}, .ids = ids orelse &[_]?u.Txt{} },
     };
     defer {
-        self.bytes.deinit(self.ctx.gpa);
-        self.relocs.deinit(self.ctx.gpa);
-        self.stack.deinit(self.ctx.gpa);
+        self.bytes.deinit(self.gpa());
+        self.relocs.deinit(self.gpa());
+        self.stack.deinit(self.gpa());
     }
     if (localTyps) |local_types| {
         try self.reserve(1 + 2 * local_types.len);
@@ -35,8 +35,10 @@ pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]cons
 
     try self.block(insts);
     try self.end(typ.results);
+    if (self.stack.items.len > 0)
+        try Stack.err(&self, null, self.stack.pop(), self.stack.items.len);
 
-    return self.dupe(ctx.m.arena.allocator());
+    return self.dupe(ctx.arena.allocator());
 }
 
 fn block(self: *Codegen, insts: []const Expr) !void {
@@ -60,6 +62,12 @@ const Error = error{
     NotPow2,
     NotValtype,
     DuplicatedId,
+    MultipleImport,
+    NotString,
+    TooMany,
+    BadImport,
+    BadExport,
+    ImportWithBody,
 };
 
 fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
@@ -83,7 +91,10 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
                 break :take operation.args[n..];
             },
         };
-        if (folded) try codegen.block(nargs);
+        if (folded) {
+            try codegen.block(nargs);
+            codegen.ctx.at = in[0];
+        }
 
         try codegen.pops(do.stack.pop);
         try codegen.opcode(op);
@@ -93,7 +104,10 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
 
         return remain;
     } else if (std.meta.stringToEnum(CustomBinOp, operation.name)) |op| {
-        if (folded) try codegen.block(operation.args);
+        if (folded) {
+            try codegen.block(operation.args);
+            codegen.ctx.at = in[0];
+        }
 
         if (codegen.stack.items.len < 2)
             return error.TypeMismatch;
@@ -179,7 +193,7 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
                         'u' => if (i < 0) return error.Signed else Stack.Sign.u,
                         else => if (i < 0) Stack.Sign.n else .p,
                     };
-                    try codegen.stack.append(codegen.ctx.gpa, .{ .i32 = .{ .at = at, .sign = sign } });
+                    try codegen.stack.append(codegen.gpa(), .{ .i32 = .{ .at = at, .sign = sign } });
                 } else {
                     try codegen.opcode(.i64_const);
                     try codegen.push(.i64);
@@ -204,8 +218,8 @@ inline fn extractFunc(codegen: *Codegen, in: []const Expr, folded: bool) !?F {
         .keyword => |name| F{ .name = name, .args = in[1..], .folded = folded },
         .id => |id| F{ .name = blk: {
             const local = codegen.locals.find(id) != null;
-            const call = codegen.ctx.m.findFunc(id) != null;
-            const global = codegen.ctx.m.findGlobal(id) != null;
+            const call = Ctx.indexFindById(codegen.ctx.I.funcs, id) != null;
+            const global = Ctx.indexFindById(codegen.ctx.I.globals, id) != null;
             if (@boolToInt(local) + @boolToInt(call) + @boolToInt(global) > 1)
                 return error.DuplicatedId;
             if (local) break :blk @tagName(.local_get);
@@ -302,37 +316,41 @@ const Op = struct {
                     return null;
                 }
             }.gen },
-            .global_get => comptime Op{ .narg = Narg.one, .gen = struct {
-                fn gen(self: *Codegen, func: F) !?[]const Expr {
-                    const found = if (func.args[0].val.asId()) |id|
-                        self.ctx.m.findGlobal(id) orelse
-                            return error.NotFound
-                    else blk: {
-                        const i = try p.u32_(func.args[0]);
-                        break :blk IR.Module.FoundId(IR.Global){ .ptr = &self.ctx.m.globals[i], .idx = i };
-                    };
+            .global_get => comptime Op{
+                .narg = Narg.one,
+                .gen = struct {
+                    fn gen(self: *Codegen, func: F) !?[]const Expr {
+                        const gs = &self.ctx.I.globals;
+                        const i = if (func.args[0].val.asId()) |id|
+                            Ctx.indexFindById(gs, id) orelse
+                                return error.NotFound
+                        else
+                            try p.u32_(func.args[0]);
+                        if (i >= gs.items.len) return error.NotFound;
 
-                    try self.uleb(found.idx);
-                    try self.push(found.ptr.type);
-
-                    return null;
-                }
-            }.gen },
+                        try self.uleb(i);
+                        @panic("FIXME:");
+                        // try self.push(self.ctx.loadGlobal().typ);
+                        // return null;
+                    }
+                }.gen,
+            },
             .nop => comptime Op{},
             .call => comptime Op{ .narg = Narg.one, .gen = struct {
-                fn gen(self: *Codegen, func: F) !?[]const Expr {
-                    const found = if (func.args[0].val.asId()) |id|
-                        self.ctx.m.findFunc(id) orelse
-                            return error.NotFound
-                    else blk: {
-                        const i = try p.u32_(func.args[0]);
-                        if (i > self.ctx.m.funcs.len) return error.NotFound;
-                        break :blk IR.Module.FoundId(IR.Func){ .ptr = &self.ctx.m.funcs[i], .idx = i };
-                    };
+                fn gen(self: *Codegen, func: F) Error!?[]const Expr {
+                    const fs = &self.ctx.I.funcs;
 
-                    try self.pops(found.ptr.type.params);
-                    try self.uleb(found.idx);
-                    try self.pushs(found.ptr.type.results);
+                    const i = if (func.args[0].val.asId()) |id|
+                        Ctx.indexFindById(fs, id) orelse
+                            return error.NotFound
+                    else
+                        try p.u32_(func.args[0]);
+                    if (i >= fs.items.len) return error.NotFound;
+
+                    const ptr = try self.ctx.typeFunc(&fs.items[i].val, fs.items[i].id);
+                    try self.pops(ptr.type.params);
+                    try self.uleb(i);
+                    try self.pushs(ptr.type.results);
 
                     return null;
                 }
@@ -655,14 +673,17 @@ fn dupe(self: Codegen, allocator: std.mem.Allocator) !IR.Code {
     };
 }
 
+inline fn gpa(self: *const Codegen) std.mem.Allocator {
+    return self.ctx.arena.child_allocator;
+}
 fn reserve(self: *Codegen, n: usize) !void {
-    try self.bytes.ensureUnusedCapacity(self.ctx.gpa, n);
+    try self.bytes.ensureUnusedCapacity(self.gpa(), n);
 }
 fn byte(self: *Codegen, b: u8) !void {
-    try self.bytes.append(self.ctx.gpa, b);
+    try self.bytes.append(self.gpa(), b);
 }
 inline fn writer(self: *Codegen) std.ArrayListUnmanaged(u8).Writer {
-    return self.bytes.writer(self.ctx.gpa);
+    return self.bytes.writer(self.gpa());
 }
 inline fn opcode(self: *Codegen, op: IR.Code.Op) !void {
     try self.byte(std.wasm.opcode(op));
@@ -675,10 +696,10 @@ fn ileb(self: *Codegen, v: i64) !void {
 }
 
 fn push(self: *Codegen, typ: Hardtype) !void {
-    try self.stack.append(self.ctx.gpa, .{ .val = typ });
+    try self.stack.append(self.gpa(), .{ .val = typ });
 }
 fn pushs(self: *Codegen, typs: []const Hardtype) !void {
-    try self.stack.ensureUnusedCapacity(self.ctx.gpa, typs.len);
+    try self.stack.ensureUnusedCapacity(self.gpa(), typs.len);
     for (typs) |typ|
         self.stack.appendAssumeCapacity(.{ .val = typ });
 }
@@ -772,14 +793,14 @@ pub const Stack = union(enum) {
     }
 
     fn snapshot(self: *const Codegen) ![]const Stack {
-        return self.ctx.gpa.dupe(Stack, self.stack.items);
+        return self.gpa().dupe(Stack, self.stack.items);
     }
     fn restore(self: *Codegen, snap: []const Stack) !void {
-        try self.stack.resize(self.ctx.gpa, snap.len);
+        try self.stack.resize(self.gpa(), snap.len);
         std.mem.copy(Stack, self.stack.items, snap);
     }
     inline fn release(self: *const Codegen, snap: []const Stack) void {
-        self.ctx.gpa.free(snap);
+        self.gpa().free(snap);
     }
 
     inline fn err(self: *Codegen, expect: ?Stack, got: ?Stack, index: ?usize) !void {

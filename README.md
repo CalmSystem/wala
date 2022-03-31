@@ -11,11 +11,11 @@ It is implemented as a set of complementary extensions over standard [WebAssembl
 ```wal
 func $fib export()
   u64 $n
-  if {($n) <= 2}
+  if {$n <= 2}
     1
     +
-      $fib{($n) - 2}
-      $fib{($n) - 1}
+      $fib{$n - 2}
+      $fib{$n - 1}
 
 ```
 
@@ -102,7 +102,7 @@ Like function calls
 
 #### Ident expansion
 
-- `($a_func ($a_param) ($a_global))` -> `(call $a_func (local.get $a_param) (global.get $a_global)`
+- `($a_func $a_param $a_global)` -> `(call $a_func (local.get $a_param) (global.get $a_global)`
 
 #### Interface types numbers
 
