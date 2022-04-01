@@ -8,7 +8,9 @@ const Ctx = @import("../Wat.zig");
 ctx: *Ctx,
 bytes: std.ArrayListUnmanaged(u8) = .{},
 relocs: std.ArrayListUnmanaged(IR.Linking.Reloc.Entry) = .{},
+types: std.ArrayListUnmanaged(IR.Func.Sig) = .{},
 locals: Locals,
+blocks: std.ArrayListUnmanaged(Block) = .{},
 stack: std.ArrayListUnmanaged(Stack) = .{},
 
 const Codegen = @This();
@@ -22,6 +24,8 @@ pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]cons
     defer {
         self.bytes.deinit(self.gpa());
         self.relocs.deinit(self.gpa());
+        self.types.deinit(self.gpa());
+        self.blocks.deinit(self.gpa());
         self.stack.deinit(self.gpa());
     }
     if (localTyps) |local_types| {
@@ -33,27 +37,36 @@ pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]cons
         }
     }
 
-    try self.block(insts);
+    try self.block(.{ .label = null, .typ = typ.results }, insts);
     try self.end(typ.results);
-    if (self.stack.items.len > 0)
-        try Stack.err(&self, null, self.stack.pop(), self.stack.items.len);
+    try self.isEmpty();
 
     return self.dupe(ctx.arena.allocator());
 }
 
-fn blockUntil(self: *Codegen, insts: []const Expr, comptime endKeywords: []const u.Txt) ![]const Expr {
+fn popInstsUntil(self: *Codegen, insts: []const Expr, comptime endKeywords: []const u.Txt) ![]const Expr {
     var remain = insts;
     while (remain.len > 0) {
         const e = remain[0].val.asList() orelse remain;
         if (e.len > 0) if (e[0].val.asKeyword()) |kv|
             inline for (endKeywords) |endK| if (u.strEql(endK, kv)) return remain;
 
+        if (self.blocks.items[self.blocks.items.len - 1].typ == null)
+            std.log.warn("Unreachable instructions {any}", .{remain});
         remain = try self.popInst(remain);
     }
     return remain;
 }
-inline fn block(self: *Codegen, insts: []const Expr) !void {
-    _ = try self.blockUntil(insts, &[_]u.Txt{});
+inline fn popInsts(self: *Codegen, insts: []const Expr) !void {
+    _ = try self.popInstsUntil(insts, &[_]u.Txt{});
+}
+fn blockUntil(self: *Codegen, it: Block, insts: []const Expr, comptime endKeywords: []const u.Txt) ![]const Expr {
+    try self.blocks.append(self.gpa(), it);
+    defer _ = self.blocks.pop();
+    return self.popInstsUntil(insts, endKeywords);
+}
+inline fn block(self: *Codegen, it: Block, insts: []const Expr) !void {
+    _ = try self.blockUntil(it, insts, &[_]u.Txt{});
 }
 
 const Error = error{
@@ -101,7 +114,7 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
             },
         };
         if (folded) {
-            try codegen.block(nargs);
+            try codegen.popInsts(nargs);
             codegen.ctx.at = in[0];
         }
 
@@ -114,7 +127,7 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
         return remain;
     } else if (std.meta.stringToEnum(CustomBinOp, operation.name)) |op| {
         if (folded) {
-            try codegen.block(operation.args);
+            try codegen.popInsts(operation.args);
             codegen.ctx.at = in[0];
         }
 
@@ -376,11 +389,13 @@ const Op = struct {
                         fn sf(f: F) []const Expr {
                             if (!f.folded) return &[_]Expr{};
 
-                            //TODO: label
-                            const i = p.nTypeuse(f.args);
+                            const has_label = f.args.len > 0 and f.args[0].val == .id;
+                            var i: usize = @boolToInt(has_label);
+
+                            i += p.nTypeuse(f.args[i..]);
                             if (i >= f.args.len) return &[_]Expr{};
 
-                            //TODO: if else end syntax
+                            //TODO: support folded else end syntax
                             const has_else = f.args.len > i + 1;
                             const j = f.args.len - 1 - @boolToInt(has_else);
 
@@ -391,72 +406,135 @@ const Op = struct {
                 .stack = .{ .pop = &[_]Hardtype{ibool} },
                 .gen = struct {
                     fn gen(self: *Codegen, func: F) !?[]const Expr {
-                        //TODO: label
-                        const typ = try self.ctx.typeuse(func.args);
+                        var remain = func.args;
+                        if (remain.len == 0) return error.Empty;
+                        const label = remain[0].val.asId();
+                        if (label != null) remain = remain[1..];
+
+                        const typ = try self.ctx.typeuse(remain);
                         defer typ.deinit(self.ctx);
-                        if (typ.remain.len == 0) return error.Empty;
-                        var remain = typ.remain;
+                        remain = typ.remain;
+                        if (remain.len == 0) return error.Empty;
 
-                        const blocktype_offset = self.bytes.items.len;
-                        try self.byte(std.wasm.block_empty);
+                        //TODO: handle unknown types size (compact or not)
+                        //TODO: handle unknown types values ([]?Hardtype)
+                        try self.pops(typ.val.params);
+                        if (typ.val.params.len == 0 and typ.val.results.len <= 1) {
+                            try self.byte(if (typ.val.results.len > 0)
+                                std.wasm.valtype(typ.val.results[0].lower())
+                            else
+                                std.wasm.block_empty);
+                        } else {
+                            const typ_id = @truncate(u32, self.types.items.len);
+                            try self.types.append(self.gpa(), typ.val);
+                            try self.relocs.append(self.gpa(), .{ .type = .typeIndexLeb, .offset = @truncate(u32, self.bytes.items.len), .index = typ_id });
+                            try self.uleb5(typ_id);
+                        }
 
-                        const pre_stack = try Stack.snapshot(self);
-                        defer Stack.release(self, pre_stack);
+                        const saved_stack = self.stack;
+                        self.stack = .{};
+                        try self.pushs(typ.val.params);
 
-                        //FIXME: need to know min stack
+                        const a_block = Block{ .label = label, .typ = typ.val.results };
                         //TODO: support folded else end syntax
                         const has_else = if (func.folded) blk: {
                             const has_folded_else = remain.len > 1;
                             const j = typ.remain.len - 1 - @boolToInt(has_folded_else);
-                            try self.block(&[_]Expr{typ.remain[j]});
+                            try self.block(a_block, &[_]Expr{typ.remain[j]});
                             break :blk has_folded_else;
                         } else blk: {
-                            remain = try self.blockUntil(remain, &[_]u.Txt{ "else", "end" });
+                            remain = try self.blockUntil(a_block, remain, &[_]u.Txt{ "else", "end" });
                             if (remain.len == 0) return error.NoBlockEnd;
                             const e = remain[0].val.asList() orelse remain;
                             remain = remain[1..]; // pop .else or .end
                             break :blk u.strEql("else", e[0].val.keyword);
                         };
 
-                        if (typ.val.params.len > 0 or typ.val.results.len > 0) { // typed
-                            std.debug.assert(pre_stack.len + typ.val.results.len - typ.val.params.len == self.stack.items.len);
-                            try Stack.endsWith(self, pre_stack, typ.val.params);
-                            try Stack.endsWithOrCast(self, typ.val.results);
-
-                            // write blocktype_offset
-                            const blocktype_p = &self.bytes.items[blocktype_offset];
-                            if (typ.val.params.len == 0 and typ.val.results.len <= 1) {
-                                blocktype_p.* = if (typ.val.results.len > 0)
-                                    std.wasm.valtype(typ.val.results[0].lower())
-                                else
-                                    std.wasm.block_empty;
-                            } else {
-                                @panic("TODO: append to self.ctx.m.more_types");
-                                // blocktype_p.* = typ_id;
-                            }
-                        } else {
-                            @panic("TODO: type from self.stack.items - pre_stack");
-                        }
+                        try self.pops(typ.val.results);
+                        try self.isEmpty();
 
                         if (has_else) {
                             try self.opcode(.@"else");
 
-                            const then_stack = try Stack.snapshot(self);
-                            defer Stack.release(self, then_stack);
-
-                            try Stack.restore(self, pre_stack);
+                            try self.pushs(typ.val.params);
 
                             if (func.folded) {
-                                try self.block(&[_]Expr{typ.remain[typ.remain.len - 1]});
+                                try self.block(a_block, &[_]Expr{typ.remain[typ.remain.len - 1]});
                             } else {
-                                remain = try self.blockUntil(remain, &[_]u.Txt{"end"});
+                                remain = try self.blockUntil(a_block, remain, &[_]u.Txt{"end"});
                                 if (remain.len == 0) return error.NoBlockEnd;
                                 remain = remain[1..]; // pop .end
                             }
 
-                            try Stack.eqlSlice(self, self.stack.items, then_stack);
-                        }
+                            try self.pops(typ.val.results);
+                            try self.isEmpty();
+                        } else if (typ.val.params.len != typ.val.results.len)
+                            return error.TypeMismatch;
                         try self.opcode(.end);
+
+                        self.stack.deinit(self.gpa());
+                        self.stack = saved_stack;
+                        try self.pushs(typ.val.results);
+
+                        return if (func.folded) null else remain;
+                    }
+                }.gen,
+            },
+            .block, .loop => comptime Op{
+                .narg = .{ .nf = struct {
+                    fn all(func: F) usize {
+                        return func.args.len;
+                    }
+                }.all },
+                .gen = struct {
+                    fn gen(self: *Codegen, func: F) !?[]const Expr {
+                        //TODO: refactor duplicated code of if
+                        var remain = func.args;
+                        if (remain.len == 0) return error.Empty;
+                        const label = remain[0].val.asId();
+                        if (label != null) remain = remain[1..];
+
+                        const typ = try self.ctx.typeuse(remain);
+                        defer typ.deinit(self.ctx);
+                        remain = typ.remain;
+                        if (remain.len == 0) return error.Empty;
+
+                        //TODO: handle unknown types size (compact or not)
+                        //TODO: handle unknown types values ([]?Hardtype)
+                        try self.pops(typ.val.params);
+                        if (typ.val.params.len == 0 and typ.val.results.len <= 1) {
+                            try self.byte(if (typ.val.results.len > 0)
+                                std.wasm.valtype(typ.val.results[0].lower())
+                            else
+                                std.wasm.block_empty);
+                        } else {
+                            const typ_id = @truncate(u32, self.types.items.len);
+                            try self.types.append(self.gpa(), typ.val);
+                            try self.relocs.append(self.gpa(), .{ .type = .typeIndexLeb, .offset = @truncate(u32, self.bytes.items.len), .index = typ_id });
+                            try self.uleb5(typ_id);
+                        }
+
+                        const saved_stack = self.stack;
+                        self.stack = .{};
+                        try self.pushs(typ.val.params);
+
+                        const a_block = Block{ .label = label, .typ = typ.val.results };
+                        if (func.folded) {
+                            try self.block(a_block, remain);
+                        } else {
+                            remain = try self.blockUntil(a_block, remain, &[_]u.Txt{"end"});
+                            if (remain.len == 0) return error.NoBlockEnd;
+                            remain = remain[1..]; // pop .end
+                        }
+
+                        try self.pops(typ.val.results);
+                        try self.isEmpty();
+
+                        try self.opcode(.end);
+
+                        self.stack.deinit(self.gpa());
+                        self.stack = saved_stack;
+                        try self.pushs(typ.val.results);
 
                         return if (func.folded) null else remain;
                     }
@@ -469,6 +547,38 @@ const Op = struct {
                     }
                 }.gen,
             },
+            .br => comptime Op{
+                .narg = Narg.one,
+                .gen = struct {
+                    fn gen(self: *Codegen, func: F) !?[]const Expr {
+                        const b = try self.findBlock(func.args[0]);
+                        if (b.val.typ) |s| try Stack.endsWithOrCast(self, s);
+                        self.blockEndUnreachable();
+                        try self.uleb(b.idx);
+                        return null;
+                    }
+                }.gen,
+            },
+            .br_if => comptime Op{
+                .narg = Narg.one,
+                .stack = .{ .pop = &[_]Hardtype{ibool} },
+                .gen = struct {
+                    fn gen(self: *Codegen, func: F) !?[]const Expr {
+                        const b = try self.findBlock(func.args[0]);
+                        if (b.val.typ) |s| try Stack.endsWithOrCast(self, s);
+                        try self.uleb(b.idx);
+                        return null;
+                    }
+                }.gen,
+            },
+            .@"unreachable" => comptime Op{
+                .gen = struct {
+                    fn gen(self: *Codegen, _: F) !?[]const Expr {
+                        self.blockEndUnreachable();
+                        return null;
+                    }
+                }.gen,
+            },
             //TODO: remove else branch
             else => {
                 std.log.warn("Unhandled {}", .{op});
@@ -478,7 +588,7 @@ const Op = struct {
     }
 
     inline fn iNconst(val: Hardtype, comptime is64: bool) Op {
-        return .{ .narg = Op.Narg.one, .stack = .{ .push = &[_]Hardtype{val} }, .gen = struct {
+        return .{ .narg = Narg.one, .stack = .{ .push = &[_]Hardtype{val} }, .gen = struct {
             fn Gen(comptime Is64: bool) type {
                 return struct {
                     fn gen(self: *Codegen, func: F) !?[]const Expr {
@@ -689,6 +799,31 @@ fn memarg(exprs: []const Expr, n: u32) !MemArg {
     if (x == 0 or (x & (x - 1)) != 0) return error.NotPow2;
     return MemArg{ .offset = offset, .align_ = @ctz(u32, x) };
 }
+const FoundBlock = struct {
+    idx: usize,
+    val: Block,
+};
+fn findBlock(self: *Codegen, expr: Expr) !FoundBlock {
+    const bs = self.blocks.items;
+    if (expr.val.asId()) |id| {
+        // shadow older
+        var i = bs.len;
+        while (i > 0) : (i -= 1) {
+            const b = bs[i - 1];
+            if (b.label) |lb| if (u.strEql(id, lb))
+                return FoundBlock{ .idx = bs.len - i, .val = b };
+        }
+        return error.NotFound;
+    } else {
+        const i = try p.u32_(expr);
+        if (i >= bs.len) return error.NotFound;
+        // 0 is current block
+        return FoundBlock{ .idx = i, .val = bs[bs.len - 1 - i] };
+    }
+}
+inline fn blockEndUnreachable(self: *Codegen) void {
+    self.blocks.items[self.blocks.items.len - 1].typ = null;
+}
 
 fn end(self: *Codegen, results: []const Hardtype) !void {
     try self.pops(results);
@@ -697,6 +832,7 @@ fn end(self: *Codegen, results: []const Hardtype) !void {
 fn dupe(self: Codegen, allocator: std.mem.Allocator) !IR.Code {
     return IR.Code{
         .bytes = try allocator.dupe(u8, self.bytes.items),
+        .types = try allocator.dupe(IR.Func.Sig, self.types.items),
         .relocs = try allocator.dupe(IR.Linking.Reloc.Entry, self.relocs.items),
     };
 }
@@ -719,6 +855,15 @@ inline fn opcode(self: *Codegen, op: IR.Code.Op) !void {
 fn uleb(self: *Codegen, v: u64) !void {
     try std.leb.writeULEB128(self.writer(), v);
 }
+inline fn uleb5At(ptr: *[5]u8, v: u32) void {
+    std.leb.writeUnsignedFixed(5, ptr, v);
+}
+/// uleb with always 5-byte
+fn uleb5(self: *Codegen, v: u32) !void {
+    var buf: [5]u8 = undefined;
+    uleb5At(&buf, v);
+    try self.writer().writeAll(&buf);
+}
 fn ileb(self: *Codegen, v: i64) !void {
     try std.leb.writeILEB128(self.writer(), v);
 }
@@ -740,6 +885,11 @@ fn pops(self: *Codegen, typs: []const Hardtype) !void {
     try Stack.endsWithOrCast(self, typs);
     self.stack.items.len -= typs.len;
 }
+fn isEmpty(self: *Codegen) !void {
+    const l = self.stack.items.len;
+    if (l == 0) return;
+    try Stack.err(self, null, self.stack.items[l - 1], l);
+}
 
 const Locals = struct {
     first: []const Hardtype,
@@ -758,6 +908,11 @@ const Locals = struct {
                 break @truncate(u32, j);
         } else null;
     }
+};
+const Block = struct {
+    label: ?u.Txt,
+    /// null is unreachable
+    typ: ?[]const Hardtype,
 };
 pub const Stack = union(enum) {
     val: Hardtype,
@@ -818,17 +973,6 @@ pub const Stack = union(enum) {
     }
     inline fn of(v: Hardtype) Stack {
         return .{ .val = v };
-    }
-
-    fn snapshot(self: *const Codegen) ![]const Stack {
-        return self.gpa().dupe(Stack, self.stack.items);
-    }
-    fn restore(self: *Codegen, snap: []const Stack) !void {
-        try self.stack.resize(self.gpa(), snap.len);
-        std.mem.copy(Stack, self.stack.items, snap);
-    }
-    inline fn release(self: *const Codegen, snap: []const Stack) void {
-        self.gpa().free(snap);
     }
 
     inline fn err(self: *Codegen, expect: ?Stack, got: ?Stack, index: ?usize) !void {

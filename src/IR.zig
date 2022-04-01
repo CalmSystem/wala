@@ -178,7 +178,9 @@ pub const Data = struct {
 
 pub const Code = struct {
     bytes: u.Bin,
-    relocs: []Linking.Reloc.Entry = &[_]Linking.Reloc.Entry{},
+    /// block types (indexed as Reloc .typeIndexLeb)
+    types: []const Func.Sig = &[_]Func.Sig{},
+    relocs: []const Linking.Reloc.Entry = &[_]Linking.Reloc.Entry{},
 
     pub const Op = std.wasm.Opcode;
 };
@@ -199,6 +201,6 @@ pub const Section = struct {
             common: Type,
             custom: u.Txt,
         },
-        relocs: []Linking.Reloc.Entry = &[_]Linking.Reloc.Entry{},
+        relocs: []const Linking.Reloc.Entry = &[_]Linking.Reloc.Entry{},
     };
 };
