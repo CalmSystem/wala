@@ -235,20 +235,37 @@ const F = struct {
 };
 inline fn extractFunc(codegen: *Codegen, in: []const Expr, folded: bool) !?F {
     return switch (in[0].val) {
-        .keyword => |name| F{ .name = name, .args = in[1..], .folded = folded },
-        .id => |id| F{ .name = blk: {
-            const local = codegen.locals.find(id) != null;
-            const call = Ctx.indexFindById(codegen.ctx.I.funcs, id) != null;
-            const global = Ctx.indexFindById(codegen.ctx.I.globals, id) != null;
-            if (@boolToInt(local) + @boolToInt(call) + @boolToInt(global) > 1)
-                return error.DuplicatedId;
-            if (local) break :blk @tagName(.local_get);
-            if (call) break :blk @tagName(.call);
-            if (global) break :blk @tagName(.global_get);
-            return error.NotFound;
+        .keyword => |name| blk: {
+            var f = F{ .name = name, .args = in[1..], .folded = folded };
+            if (u.strEql("=", f.name)) {
+                if (f.args.len == 0) return error.Empty;
+                const id = f.args[0].val.asId() orelse return error.NotOp;
+                f.name = switch (try codegen.idKind(id)) {
+                    .local => @tagName(.local_set),
+                    .global => @tagName(.global_set),
+                    .func => return error.NotOp,
+                };
+            }
+            break :blk f;
+        },
+        .id => |id| F{ .name = switch (try codegen.idKind(id)) {
+            .local => @tagName(.local_get),
+            .func => @tagName(.call),
+            .global => @tagName(.global_get),
         }, .args = in, .folded = folded },
         else => null,
     };
+}
+fn idKind(codegen: *const Codegen, id: u.Txt) !enum { local, global, func } {
+    const local = codegen.locals.find(id) != null;
+    const call = Ctx.indexFindById(codegen.ctx.I.funcs, id) != null;
+    const global = Ctx.indexFindById(codegen.ctx.I.globals, id) != null;
+    if (@boolToInt(local) + @boolToInt(call) + @boolToInt(global) > 1)
+        return error.DuplicatedId;
+    if (local) return .local;
+    if (call) return .func;
+    if (global) return .global;
+    return error.NotFound;
 }
 fn nameToOp(name: u.Txt) ?IR.Code.Op {
     var buf: [32]u8 = undefined;

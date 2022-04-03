@@ -85,26 +85,31 @@ Like function calls
 - `sum(a b c)` -> `(sum a b c)`
 - `f{n + 1}` -> `(f (+ n 1))`
 
-#### Short const
+### Short const
 
 - `42i32` -> `(i32.const 42)`
 <!-- TODO: - `1.3f64` -> `(f64.const 1.3)` -->
 
-#### Operand Type Deduction
+### Operand type deduction
 
 - `(i32.add 35 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
 - `(i64.add 35 7)` -> `(i64.add (i64.const 35) (i64.const 7))`
 
-#### Common Operators
+### Common operators
 
 - `(+ 35i32 7)` -> `(i32.add (i32.const 35) (i32.const 7))`
 - `(+ 35i64 7)` -> `(i64.add (i64.const 35) (i64.const 7))`
 
-#### Ident expansion
+### Ident expansion
 
-- `($a_func $a_param $a_global)` -> `(call $a_func (local.get $a_param) (global.get $a_global)`
+- `($a_func $a_param $a_global)` -> `(call $a_func (local.get $a_param) (global.get $a_global))`
 
-#### Interface types numbers
+#### Assign operator
+
+- `{$a_local = 5}` -> `(local.set $a_local (i32.const 5))`
+- `{$a_global = 5}` -> `(global.set $a_local (i32.const 5))`
+
+### Interface types numbers
 
 - `{42s64 <= 1}` -> `(i64.le_s (i64.const 42) (i64.const 1))`
 - `{42u64 <= 1}` -> `(i64.le_u (i64.const 42) (i64.const 1))`

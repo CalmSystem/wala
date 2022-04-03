@@ -6,14 +6,13 @@ func $gcd export()
   block $zero
     block
       br_if 0 $a
-      local.set $c $b
+      {$c = $b}
       br $zero
     loop
-      local.set $a
+      = $a
         %
           $b
-          local.tee $c
-            $a
-      local.set $b $c
+          local.tee $c $a
+      {$b = $c}
       br_if 0 $a
   $c
