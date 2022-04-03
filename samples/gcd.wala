@@ -1,22 +1,19 @@
 func $gcd export()
-  param i32 i32
-  result i32
-  local i32
+  param $a u32
+  param $b u32
+  result u32
+  local $c u32
   block $zero
     block
-      br_if 0
-        local.get 0
-      local.set 2
-        local.get 1
+      br_if 0 $a
+      local.set $c $b
       br $zero
     loop
-      local.get 1
-      local.get 0
-      local.tee 2
-      local.set 0
-        i32.rem_u
-      local.set 1
-        local.get 2
-      br_if 0
-        local.get 0
-  local.get 2
+      local.set $a
+        %
+          $b
+          local.tee $c
+            $a
+      local.set $b $c
+      br_if 0 $a
+  $c

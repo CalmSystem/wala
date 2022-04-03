@@ -131,10 +131,8 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
             codegen.ctx.at = in[0];
         }
 
-        if (codegen.stack.items.len < 2)
-            return error.TypeMismatch;
-        var tr = codegen.stack.pop();
-        const tl = codegen.stack.pop();
+        var tr = try codegen.pop();
+        const tl = try codegen.pop();
         if (tl != .val or !tr.eqlOrCast(tl.val, codegen)) {
             codegen.ctx.err = .{ .typeMismatch = .{ .expect = tl, .got = tr } };
             return error.TypeMismatch;
@@ -324,17 +322,26 @@ const Op = struct {
             .f64_reinterpret_i64 => comptime tNfrom(.f64, .i64),
             .local_get => comptime Op{ .narg = Narg.one, .gen = struct {
                 fn gen(self: *Codegen, func: F) !?[]const Expr {
-                    const i = if (func.args[0].val.asId()) |id|
-                        self.locals.find(id) orelse
-                            return error.NotFound
-                    else
-                        try p.u32_(func.args[0]);
-
-                    const typ = try self.locals.get(i);
-
-                    try self.uleb(i);
-                    try self.push(typ);
-
+                    const l = try self.locals.find_(func.args[0]);
+                    try self.uleb(l.idx);
+                    try self.push(l.typ);
+                    return null;
+                }
+            }.gen },
+            .local_set => comptime Op{ .narg = Narg.one, .gen = struct {
+                fn gen(self: *Codegen, func: F) !?[]const Expr {
+                    const l = try self.locals.find_(func.args[0]);
+                    try self.uleb(l.idx);
+                    try self.pops(&[_]Hardtype{l.typ});
+                    return null;
+                }
+            }.gen },
+            .local_tee => comptime Op{ .narg = Narg.one, .gen = struct {
+                fn gen(self: *Codegen, func: F) !?[]const Expr {
+                    const l = try self.locals.find_(func.args[0]);
+                    try self.uleb(l.idx);
+                    try self.pops(&[_]Hardtype{l.typ});
+                    try self.push(l.typ);
                     return null;
                 }
             }.gen },
@@ -896,17 +903,25 @@ const Locals = struct {
     second: []const Hardtype,
     ids: []const ?u.Txt,
 
-    inline fn get(it: @This(), i: usize) !Hardtype {
-        return if (i < it.first.len) it.first[i] else if (i < it.first.len + it.second.len)
-            it.second[i - it.first.len]
-        else
-            error.NotFound;
-    }
     fn find(it: @This(), id: u.Txt) ?u32 {
         return for (it.ids) |f, j| {
             if (f != null and u.strEql(id, f.?))
                 break @truncate(u32, j);
         } else null;
+    }
+    const Found = struct {
+        idx: usize,
+        typ: Hardtype,
+    };
+    fn find_(it: @This(), expr: Expr) !Found {
+        const i = if (expr.val.asId()) |id|
+            it.find(id) orelse
+                return error.NotFound
+        else
+            try p.u32_(expr);
+        if (i >= it.first.len + it.second.len) return error.NotFound;
+
+        return Found{ .idx = i, .typ = if (i < it.first.len) it.first[i] else it.second[i - it.first.len] };
     }
 };
 const Block = struct {
@@ -951,7 +966,10 @@ pub const Stack = union(enum) {
     }
     fn eqlOrCast(got: *Stack, expect: Hardtype, self: *Codegen) bool {
         return switch (got.*) {
-            .val => |v| v == expect,
+            .val => |v| switch (expect) {
+                .i32, .i64 => v.lower() == expect.lower(),
+                else => v == expect,
+            },
             .i32 => |v| switch (expect) {
                 //NOTE: i to s implicit cast is probably misleading
                 .i32, .s32 => true,
