@@ -433,11 +433,14 @@ const Op = struct {
                             i += p.nTypeuse(f.args[i..]);
                             if (i >= f.args.len) return &[_]Expr{};
 
-                            //TODO: support folded else end syntax
-                            const has_else = f.args.len > i + 1;
-                            const j = f.args.len - 1 - @boolToInt(has_else);
-
-                            return f.args[i..j];
+                            for (f.args[i..]) |arg, j| {
+                                if (p.asFuncNamed(arg, "then") != null)
+                                    return f.args[i .. i + j];
+                            } else {
+                                const has_else = f.args.len > i + 1;
+                                const k = f.args.len - 1 - @boolToInt(has_else);
+                                return f.args[i..k];
+                            }
                         }
                     }.sf,
                 },
@@ -474,12 +477,20 @@ const Op = struct {
                         try self.pushs(typ.val.params);
 
                         const a_block = Block{ .label = label, .typ = typ.val.results };
-                        //TODO: support folded else end syntax
                         const has_else = if (func.folded) blk: {
-                            const has_folded_else = remain.len > 1;
-                            const j = typ.remain.len - 1 - @boolToInt(has_folded_else);
-                            try self.block(a_block, &[_]Expr{typ.remain[j]});
-                            break :blk has_folded_else;
+                            const insts = for (remain) |arg, j| {
+                                if (p.asFuncNamed(arg, "then") != null) {
+                                    remain = remain[j + 1 ..];
+                                    break arg.val.list[j..];
+                                }
+                            } else no_then: {
+                                const has_folded_else = remain.len > 1;
+                                const k = remain.len - 1 - @boolToInt(has_folded_else);
+                                remain = remain[k + 1 ..];
+                                break :no_then typ.remain[k .. k + 1];
+                            };
+                            try self.block(a_block, insts);
+                            break :blk remain.len > 0;
                         } else blk: {
                             remain = try self.blockUntil(a_block, remain, &[_]u.Txt{ "else", "end" });
                             if (remain.len == 0) return error.NoBlockEnd;
@@ -497,7 +508,9 @@ const Op = struct {
                             try self.pushs(typ.val.params);
 
                             if (func.folded) {
-                                try self.block(a_block, &[_]Expr{typ.remain[typ.remain.len - 1]});
+                                if (remain.len == 1 and p.asFuncNamed(remain[0], "else") != null)
+                                    remain = remain[0].val.list[1..];
+                                try self.block(a_block, remain);
                             } else {
                                 remain = try self.blockUntil(a_block, remain, &[_]u.Txt{"end"});
                                 if (remain.len == 0) return error.NoBlockEnd;
@@ -638,15 +651,15 @@ const Op = struct {
         }.Gen(is64).gen };
     }
     fn GenMemarg(comptime align__: u32) type {
-                    return struct {
-                        fn gen(self: *Codegen, func: F) !?[]const Expr {
-                            const arg = try memarg(func.args, align__);
-                            try self.uleb(arg.align_);
-                            try self.uleb(arg.offset);
-                            return null;
-                        }
-                    };
-                }
+        return struct {
+            fn gen(self: *Codegen, func: F) !?[]const Expr {
+                const arg = try memarg(func.args, align__);
+                try self.uleb(arg.align_);
+                try self.uleb(arg.offset);
+                return null;
+            }
+        };
+    }
     inline fn tNstore(val: Hardtype, comptime align_: u32) Op {
         return .{
             .narg = .{ .nf = nMemarg },
