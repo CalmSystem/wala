@@ -303,10 +303,24 @@ const Op = struct {
             .i32_const => comptime iNconst(.i32, false),
             .i64_const => comptime iNconst(.i64, true),
             //fN_const
+            .i32_load => comptime tNload(.i32, 4),
+            .i64_load => comptime tNload(.i64, 8),
+            .f32_load => comptime tNload(.f32, 4),
+            .f64_load => comptime tNload(.f64, 8),
+            .i32_load8_s, .i32_load8_u => comptime tNload(.i32, 1),
+            .i32_load16_s, .i32_load16_u => comptime tNload(.i32, 2),
+            .i64_load8_s, .i64_load8_u => comptime tNload(.i64, 1),
+            .i64_load16_s, .i64_load16_u => comptime tNload(.i64, 2),
+            .i64_load32_s, .i64_load32_u => comptime tNload(.i64, 4),
             .i32_store => comptime tNstore(.i32, 4),
             .i64_store => comptime tNstore(.i64, 8),
             .f32_store => comptime tNstore(.f32, 4),
             .f64_store => comptime tNstore(.f64, 8),
+            .i32_store8 => comptime tNstore(.i32, 1),
+            .i32_store16 => comptime tNstore(.i32, 2),
+            .i64_store8 => comptime tNstore(.i32, 1),
+            .i64_store16 => comptime tNstore(.i32, 2),
+            .i64_store32 => comptime tNstore(.i32, 4),
             .i32_eqz => comptime tNtest(.i32),
             .i32_eq, .i32_ne, .i32_lt_s, .i32_lt_u, .i32_gt_s, .i32_gt_u, .i32_le_s, .i32_le_u, .i32_ge_s, .i32_ge_u => comptime tNcompare(.i32),
             .i64_eqz => comptime tNtest(.i64),
@@ -623,14 +637,7 @@ const Op = struct {
             }
         }.Gen(is64).gen };
     }
-    inline fn tNstore(val: Hardtype, comptime align_: u32) Op {
-        return .{
-            .narg = .{ .nf = nMemarg },
-            .stack = .{
-                .pop = &[_]Hardtype{ .i32, val },
-            },
-            .gen = struct {
-                fn Gen(comptime align__: u32) type {
+    fn GenMemarg(comptime align__: u32) type {
                     return struct {
                         fn gen(self: *Codegen, func: F) !?[]const Expr {
                             const arg = try memarg(func.args, align__);
@@ -640,7 +647,23 @@ const Op = struct {
                         }
                     };
                 }
-            }.Gen(align_).gen,
+    inline fn tNstore(val: Hardtype, comptime align_: u32) Op {
+        return .{
+            .narg = .{ .nf = nMemarg },
+            .stack = .{
+                .pop = &[_]Hardtype{ .i32, val },
+            },
+            .gen = GenMemarg(align_).gen,
+        };
+    }
+    inline fn tNload(val: Hardtype, comptime align_: u32) Op {
+        return .{
+            .narg = .{ .nf = nMemarg },
+            .stack = .{
+                .pop = &[_]Hardtype{.i32},
+                .push = &[_]Hardtype{val},
+            },
+            .gen = GenMemarg(align_).gen,
         };
     }
     inline fn tNtest(val: Hardtype) Op {
