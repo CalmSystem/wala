@@ -31,8 +31,8 @@ pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]cons
     if (localTyps) |local_types| {
         try self.reserve(1 + 2 * local_types.len);
         try self.uleb(local_types.len);
-        for (local_types) |local, i| {
-            try self.uleb(typ.params.len + i);
+        for (local_types) |local| {
+            try self.uleb(1); // Can be RLE for space optimization
             try self.byte(std.wasm.valtype(local.lower()));
         }
     }

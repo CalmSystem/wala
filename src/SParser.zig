@@ -141,6 +141,7 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
                     };
                 }
             }.pred);
+            if (slice.len == 0) return error.InvalidUtf8;
             try str.appendSlice(slice);
         }
 
