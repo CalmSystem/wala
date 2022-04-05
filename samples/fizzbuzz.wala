@@ -1,0 +1,43 @@
+memory(export("memory") 1)
+
+data((64) "Fizz Buzz ")
+
+func export("_start")
+  local $n u32
+  {$n = 1}
+  loop
+    if {$n % 15}
+      if {$n % 5}
+        if {$n % 3}
+          then
+            ;; itoa 2 digit
+            i32.store 32
+              if (result u32) {$n >= 10}
+                {{$n / 10} + 0x30}
+                else 0
+            i32.store8 offset=1 32 {{$n % 10} + 0x30}
+            i32.store8 offset=2 32 0x20 ;; space
+            $puts(32 3)
+          $puts(64 5)
+        $puts(69 5)
+      $puts(64 10)
+    {$n = {$n + 1}} 
+    br_if 0 {$n <= 100}
+  i32.store 32 0xA ;; \n
+  $puts(32 1)
+
+import "wasi_unstable" "fd_write"
+  func $fd_write
+    param i32 i32 i32 i32
+    result i32
+func $puts
+  param $ptr i32
+  param $len i32
+  i32.store 8 $ptr
+  i32.store offset=4 8 $len
+  $fd_write
+    1 ;; fd: stdout
+    8 ;; const ciovec*
+    1 ;; len of ciovec
+    4 ;; written*
+  drop

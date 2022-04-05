@@ -1,7 +1,6 @@
 (module
   (func $gcd (param i32 i32) (result i32)
     (local i32)
-    ;; FIXME: must support flat instructions
     block  ;; label = @1
       block  ;; label = @2
         local.get 0

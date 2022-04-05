@@ -61,6 +61,7 @@ pub fn build(b: *std.build.Builder) void {
         VerifyTest.ok(.run, "samples/gcd.wala", &[_][]const u8{ "--", "--invoke", "fib", "132", "56" }),
         VerifyTest.ok(.run, "samples/gcd.wat", &[_][]const u8{ "--", "--invoke", "fib", "132", "56" }),
         VerifyTest.ok(.run, "samples/99-bottles-of-beer.wala", null),
+        VerifyTest.ok(.run, "samples/fizzbuzz.wala", null),
         VerifyTest.errTest(.parse, "fileNotFound.wat", null),
         VerifyTest.errTest(.parse, "topLevelIndent.wala", null),
         VerifyTest.errTest(.parse, "indentMismatch.wala", null),

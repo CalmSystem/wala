@@ -1,6 +1,6 @@
 # Wala
 
-A language trying to simplify [WebAssembly Text](https://developer.mozilla.org/en-US/docs/WebAssembly/Understanding_the_text_format) syntax while keeping the full expressiveness and retro-compatibility. Unwittingly became a Zig toolchain for WASM.
+A language trying to simplify [WebAssembly Text](https://developer.mozilla.org/en-US/docs/WebAssembly/Understanding_the_text_format) syntax while keeping the full expressiveness and retro-compatibility. Unwittingly becoming a Zig toolchain for WASM.
 
 Pronounced `\vwa.la\` as in french voila *(meaning here it is)*. The exact acronym's composition is unspecified but can be interpreted as [WebAssembly](https://webassembly.org/) Language Adaptor or What Another Linguistic Anomaly.
 
@@ -29,6 +29,8 @@ Is expended to:
         (call $fib (i64.sub (local.get $n) (i64.const 2)))
         (call $fib (i64.sub (local.get $n) (i64.const 1)))))))
 ```
+
+For working examples, see [samples](./samples): [fib](samples/fib.wala) [fizzbuzz](./samples/fizzbuzz.wala),  [99bottles](.samples/99-bottles-of-beer.wala), ...
 
 ## Install
 
