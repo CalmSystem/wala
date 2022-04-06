@@ -12,6 +12,7 @@ types: std.ArrayListUnmanaged(IR.Func.Sig) = .{},
 locals: Locals,
 blocks: std.ArrayListUnmanaged(Block) = .{},
 stack: std.ArrayListUnmanaged(Stack) = .{},
+consts: std.StringHashMapUnmanaged([]const Expr) = .{},
 
 const Codegen = @This();
 const Hardtype = IR.Sigtype;
@@ -27,6 +28,7 @@ pub fn load(ctx: *Ctx, insts: []const Expr, typ: IR.Func.Sig, localTyps: ?[]cons
         self.types.deinit(self.gpa());
         self.blocks.deinit(self.gpa());
         self.stack.deinit(self.gpa());
+        self.consts.deinit(self.gpa());
     }
     if (localTyps) |local_types| {
         try self.reserve(1 + 2 * local_types.len);
@@ -168,14 +170,85 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
         try codegen.push(if (do.bin) tl.val else .i32);
 
         return folded_rem orelse operation.args;
+    } else if (std.meta.stringToEnum(CustomOp, operation.name)) |op| {
+        switch (op) {
+            .@"const.define", .@":=" => {
+                if (operation.args.len < 2) return error.Empty;
+                const id = operation.args[0].val.asId() orelse return error.NotFound;
+                const exprs = if (folded) operation.args[1..] else operation.args[1..2];
+                try codegen.consts.put(codegen.gpa(), id, exprs);
+                return folded_rem orelse operation.args[2..];
+            },
+            .@"const.expand" => {
+                if (operation.args.len == 0) return error.Empty;
+                const id = operation.args[0].val.asId() orelse return error.NotFound;
+                const exprs = codegen.consts.get(id) orelse return error.NotFound;
+                try codegen.popInsts(exprs);
+                return folded_rem orelse operation.args[1..];
+            },
+            .@"*=" => {
+                const mem_start = try codegen.popInst(operation.args);
+                const narg = nMemarg(mem_start);
+                const remain = mem_start[narg..];
+                if (folded) {
+                    try codegen.popInsts(remain);
+                    codegen.ctx.at = in[0];
+                }
+
+                const val = try codegen.pop();
+                if (val != .val) return error.TypeMismatch;
+                try codegen.pops(&[_]Hardtype{.i32});
+
+                const default_align: u32 = switch (val.val) {
+                    .u8, .s8 => 1,
+                    .u16, .s16 => 2,
+                    .u32, .s32, .i32, .f32 => 4,
+                    .u64, .s64, .i64, .f64 => 8,
+                };
+                const arg = try memarg(mem_start, default_align);
+
+                try codegen.opcode(switch (val.val) {
+                    .u8, .s8 => .i32_store8,
+                    .u16, .s16 => .i32_store16,
+                    .u32, .s32, .i32 => .i32_store,
+                    .f32 => .f32_store,
+                    .u64, .s64, .i64 => .i64_store,
+                    .f64 => .f64_store,
+                });
+                try codegen.uleb(arg.align_);
+                try codegen.uleb(arg.offset);
+
+                return folded_rem orelse remain;
+            },
+        }
+        //TODO: more custom ops
+    } else if (std.meta.stringToEnum(Hardtype, operation.name)) |typ| {
+        if (folded) {
+            try codegen.popInsts(operation.args);
+            codegen.ctx.at = in[0];
+        }
+        var val = try codegen.pop();
+        // Relaxed cast
+        if (!val.eqlOrCast(typ, codegen) and (val != .val or val.val.lower() != typ.lower())) {
+            try Stack.err(codegen, Stack.of(typ), val, null);
+        }
+        try codegen.push(typ);
+        return folded_rem orelse operation.args;
     } else if (!folded or operation.args.len == 0) { // keyword only
-        if (operation.name.len > 3) { // Short const
-            const head = operation.name[0 .. operation.name.len - 3];
-            const tail = operation.name[operation.name.len - 3 ..];
+        const n8 = operation.name.len > 2 and std.ascii.isAlpha(operation.name[operation.name.len - 2]);
+        if (n8 or operation.name.len > 3) { // Short const
+            const head = operation.name[0 .. operation.name.len - 3 + @boolToInt(n8)];
+            const tail = operation.name[operation.name.len - 3 + @boolToInt(n8) ..];
             if (std.meta.stringToEnum(Hardtype, tail)) |typ| {
                 switch (typ) {
-                    .i32, .s32, .u32 => if (p.i32s(head) catch null) |i| {
-                        if (typ == .u32 and i < 0) return error.Signed;
+                    .i32, .s32, .u32, .u16, .s16, .u8, .s8 => if (p.i32s(head) catch null) |i| {
+                        const unsigned = switch (typ) {
+                            .u32, .u16, .u8 => true,
+                            else => false,
+                        };
+                        if (unsigned and i < 0) return error.Signed;
+                        //MAYBE: check for overflow of n16 and n8
+
                         try codegen.opcode(.i32_const);
                         try codegen.ileb(i);
 
@@ -189,7 +262,7 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
                         try codegen.push(typ);
                     },
                     //TODO: remove else branch
-                    else => @panic("WIP"),
+                    .f32, .f64 => @panic("WIP"),
                 }
                 return operation.args;
             }
@@ -223,7 +296,7 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
                 return operation.args;
             }
         }
-        //TODO: more custom ops
+        //TODO: more custom keyword
 
     }
     return error.NotOp;
@@ -233,7 +306,7 @@ const F = struct {
     args: []const Expr,
     folded: bool,
 };
-inline fn extractFunc(codegen: *Codegen, in: []const Expr, folded: bool) !?F {
+fn extractFunc(codegen: *Codegen, in: []const Expr, folded: bool) !?F {
     return switch (in[0].val) {
         .keyword => |name| blk: {
             var f = F{ .name = name, .args = in[1..], .folded = folded };
@@ -243,7 +316,7 @@ inline fn extractFunc(codegen: *Codegen, in: []const Expr, folded: bool) !?F {
                 f.name = switch (try codegen.idKind(id)) {
                     .local => @tagName(.local_set),
                     .global => @tagName(.global_set),
-                    .func => return error.NotOp,
+                    else => return error.NotOp,
                 };
             }
             break :blk f;
@@ -252,19 +325,22 @@ inline fn extractFunc(codegen: *Codegen, in: []const Expr, folded: bool) !?F {
             .local => @tagName(.local_get),
             .func => @tagName(.call),
             .global => @tagName(.global_get),
+            .@"const" => @tagName(.@"const.expand"),
         }, .args = in, .folded = folded },
         else => null,
     };
 }
-fn idKind(codegen: *const Codegen, id: u.Txt) !enum { local, global, func } {
+fn idKind(codegen: *const Codegen, id: u.Txt) !enum { local, global, func, @"const" } {
     const local = codegen.locals.find(id) != null;
     const call = Ctx.indexFindById(codegen.ctx.I.funcs, id) != null;
     const global = Ctx.indexFindById(codegen.ctx.I.globals, id) != null;
-    if (@boolToInt(local) + @boolToInt(call) + @boolToInt(global) > 1)
+    const cons = codegen.consts.contains(id);
+    if (@boolToInt(local) + @boolToInt(call) + @boolToInt(global) + @boolToInt(cons) > 1)
         return error.DuplicatedId;
     if (local) return .local;
     if (call) return .func;
     if (global) return .global;
+    if (cons) return .@"const";
     return error.NotFound;
 }
 fn nameToOp(name: u.Txt) ?IR.Code.Op {
@@ -660,9 +736,12 @@ const Op = struct {
             }
         };
     }
+    fn nfMemarg(f: F) usize {
+        return nMemarg(f.args);
+    }
     inline fn tNstore(val: Hardtype, comptime align_: u32) Op {
         return .{
-            .narg = .{ .nf = nMemarg },
+            .narg = .{ .nf = nfMemarg },
             .stack = .{
                 .pop = &[_]Hardtype{ .i32, val },
             },
@@ -671,7 +750,7 @@ const Op = struct {
     }
     inline fn tNload(val: Hardtype, comptime align_: u32) Op {
         return .{
-            .narg = .{ .nf = nMemarg },
+            .narg = .{ .nf = nfMemarg },
             .stack = .{
                 .pop = &[_]Hardtype{.i32},
                 .push = &[_]Hardtype{val},
@@ -824,6 +903,8 @@ const CustomBinOp = enum {
     }
 };
 
+const CustomOp = enum { @"const.define", @":=", @"const.expand", @"*=" };
+
 fn kvarg(exprs: []const Expr, comptime key: u.Txt) ?u.Txt {
     if (exprs.len > 0) {
         if (exprs[0].val.asKeyword()) |k| {
@@ -833,8 +914,7 @@ fn kvarg(exprs: []const Expr, comptime key: u.Txt) ?u.Txt {
     }
     return null;
 }
-fn nMemarg(func: F) usize {
-    const exprs = func.args;
+fn nMemarg(exprs: []const Expr) usize {
     var i: usize = 0;
     if (kvarg(exprs, "offset") != null)
         i += 1;

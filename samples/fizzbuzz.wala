@@ -4,6 +4,8 @@ data((64) "Fizz Buzz ")
 
 func export("_start")
   local $n u32
+  {$BUF := 32u32}
+  {$DATA := 64u32}
   {$n = 1}
   loop
     if {$n % 15}
@@ -11,20 +13,21 @@ func export("_start")
         if {$n % 3}
           then
             ;; itoa 2 digit
-            i32.store 32
+            *= $BUF
               if (result u32) {$n >= 10}
                 {{$n / 10} + 0x30}
                 else 0
-            i32.store8 offset=1 32 {{$n % 10} + 0x30}
-            i32.store8 offset=2 32 0x20 ;; space
-            $puts(32 3)
-          $puts(64 5)
-        $puts(69 5)
-      $puts(64 10)
+            *= $BUF offset=1
+              u8 {{$n % 10} + 0x30}
+            {$BUF *= offset=2 0x20u8} ;; space
+            $puts($BUF 3)
+          $puts($DATA 5)
+        $puts({$DATA + 5} 5)
+      $puts($DATA 10)
     {$n = {$n + 1}} 
     br_if 0 {$n <= 100}
-  i32.store 32 0xA ;; \n
-  $puts(32 1)
+  {$BUF *= 0xAu8} ;; \n
+  $puts($BUF 1)
 
 import "wasi_unstable" "fd_write"
   func $fd_write
@@ -33,11 +36,12 @@ import "wasi_unstable" "fd_write"
 func $puts
   param $ptr i32
   param $len i32
-  i32.store 8 $ptr
-  i32.store offset=4 8 $len
+  {$CIO := 8}
+  {$CIO *= $ptr}
+  {$CIO *= offset=4 $len}
   $fd_write
     1 ;; fd: stdout
-    8 ;; const ciovec*
+    $CIO ;; const ciovec*
     1 ;; len of ciovec
     4 ;; written*
   drop

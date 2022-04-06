@@ -116,6 +116,10 @@ Like function calls
 - `{42s64 <= 1}` -> `(i64.le_s (i64.const 42) (i64.const 1))`
 - `{42u64 <= 1}` -> `(i64.le_u (i64.const 42) (i64.const 1))`
 
+### Define
+
+- `{$C := 5} (call $func $C $C)` -> `(call $func (i32.const 5) (i32.const 5))`
+
 ### Planned
 
 #### Result Type Deduction

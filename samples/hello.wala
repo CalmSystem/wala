@@ -12,11 +12,12 @@ memory(export("memory") 1)
 data((16) "Hello, W0rld!\n")
 
 func $main export("_start")
-  i32.store 8 16
-  i32.store offset=4 8 14
-  call $fd_write
+  {$CIO := 8}
+  {$CIO *= 16u32}
+  {$CIO *= offset=4 14u32}
+  $fd_write
     1 ;; fd: stdout
-    8 ;; const ciovec*
+    $CIO ;; const ciovec*
     1 ;; len of ciovec
     4 ;; written*
   drop
