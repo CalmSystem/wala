@@ -261,7 +261,6 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
 
                         try codegen.push(typ);
                     },
-                    //TODO: remove else branch
                     .f32, .f64 => @panic("WIP"),
                 }
                 return operation.args;

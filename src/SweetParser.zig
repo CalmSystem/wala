@@ -102,34 +102,38 @@ inline fn deinitAll(arr: []Expr, allocator: std.mem.Allocator) void {
         expr.deinit(allocator);
     allocator.destroy(arr.ptr);
 }
+/// https://github.com/ziglang/zig/issues/4437
+inline fn expectEqual(expected: anytype, actual: anytype) !void {
+    return std.testing.expectEqual(@as(@TypeOf(actual), expected), actual);
+}
 test "empty" {
     var iter = TextIterator.unsafeInit("");
     const empty = try parseAll(&iter, std.testing.failing_allocator);
 
-    try std.testing.expect(empty.len == 0);
+    try expectEqual(0, empty.len);
 }
 test "skip spaces" {
     var iter = try TextIterator.init("\n() (;b ;) \r\n;; comment\n(  )");
     const two = try parseAll(&iter, std.testing.allocator);
     defer deinitAll(two, std.testing.allocator);
 
-    try std.testing.expect(two.len == 2);
+    try expectEqual(2, two.len);
     try std.testing.expect(two[1].val == .list);
-    try std.testing.expect(two[1].val.list.len == 0);
-    try std.testing.expect(two[1].at.?.offset == 24);
-    try std.testing.expect(two[1].at.?.len == 4);
+    try expectEqual(0, two[1].val.list.len);
+    try expectEqual(24, two[1].at.?.offset);
+    try expectEqual(4, two[1].at.?.len);
 }
 test "strings" {
     var iter = try TextIterator.init(
-        \\"a\n\t\r\\b\'\"c\64"
+        \\"a\n\t\r\\b\'\"c\64\u{65}"
         \\$id
         \\$"still id"
     );
     const str = try parseAll(&iter, std.testing.allocator);
     defer deinitAll(str, std.testing.allocator);
 
-    try std.testing.expect(str.len == 3);
-    try std.testing.expectEqualStrings("a\n\t\r\\b\'\"cd", str[0].val.string);
+    try expectEqual(3, str.len);
+    try std.testing.expectEqualStrings("a\n\t\r\\b\'\"cde", str[0].val.string);
     try std.testing.expectEqualStrings("id", str[1].val.id);
     try std.testing.expectEqualStrings("still id", str[2].val.id);
 }
@@ -144,20 +148,20 @@ test "infix" {
     const infix = try parseAll(&iter, std.testing.allocator);
     defer deinitAll(infix, std.testing.allocator);
 
-    try std.testing.expect(infix.len == 4);
+    try expectEqual(4, infix.len);
     for (infix) |list| {
         try std.testing.expect(list.val == .list);
         for (list.val.list) |kv|
             try std.testing.expect(kv.val == .keyword);
     }
 
-    try std.testing.expect(infix[0].val.list.len == 0);
-    try std.testing.expect(infix[1].val.list.len == 1);
-    try std.testing.expect(infix[2].val.list.len == 3);
+    try expectEqual(0, infix[0].val.list.len);
+    try expectEqual(1, infix[1].val.list.len);
+    try expectEqual(3, infix[2].val.list.len);
     try std.testing.expectEqualStrings("a", infix[2].val.list[0].val.keyword);
     try std.testing.expectEqualStrings("b", infix[2].val.list[1].val.keyword);
     try std.testing.expectEqualStrings("c", infix[2].val.list[2].val.keyword);
-    try std.testing.expect(infix[3].val.list.len == 4);
+    try expectEqual(4, infix[3].val.list.len);
     try std.testing.expectEqualStrings("+", infix[3].val.list[0].val.keyword);
     try std.testing.expectEqualStrings("a", infix[3].val.list[1].val.keyword);
     try std.testing.expectEqualStrings("b", infix[3].val.list[2].val.keyword);
@@ -172,16 +176,16 @@ test "neoteric" {
     const neoteric = try parseAll(&iter, std.testing.allocator);
     defer deinitAll(neoteric, std.testing.allocator);
 
-    try std.testing.expect(neoteric.len == 3);
+    try expectEqual(3, neoteric.len);
     for (neoteric) |list| {
         try std.testing.expect(list.val == .list);
-        try std.testing.expect(list.val.list.len == 2);
+        try expectEqual(2, list.val.list.len);
         try std.testing.expectEqualStrings("a", list.val.list[0].val.keyword);
     }
 
-    try std.testing.expect(neoteric[0].val.list[1].val.list.len == 1);
+    try expectEqual(1, neoteric[0].val.list[1].val.list.len);
     try std.testing.expectEqualStrings("b", neoteric[1].val.list[1].val.keyword);
-    try std.testing.expect(neoteric[2].val.list[1].val.list.len == 2);
+    try expectEqual(2, neoteric[2].val.list[1].val.list.len);
     try std.testing.expectEqualStrings("b", neoteric[2].val.list[1].val.list[0].val.keyword);
 }
 test "Expr.format" {
@@ -189,7 +193,7 @@ test "Expr.format" {
     const exprs = try parseAll(&iter, std.testing.allocator);
     defer deinitAll(exprs, std.testing.allocator);
 
-    try std.testing.expect(exprs.len == 1);
+    try expectEqual(1, exprs.len);
     try std.testing.expectFmt(
         \\(a ($b) "c" d)
     , "{}", .{exprs[0]});
@@ -211,7 +215,7 @@ test "Error.TopLevelIndent" {
     const err = parseAll(&iter, std.testing.failing_allocator);
 
     try std.testing.expectError(Error.TopLevelIndent, err);
-    try std.testing.expect(iter.cur.?.offset == 3);
+    try expectEqual(3, iter.cur.?.offset);
 }
 test "Error.IndentMismatch" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -226,9 +230,33 @@ test "Error.IndentMismatch" {
     const err = parseAll(&iter, arena.allocator());
 
     try std.testing.expectError(Error.IndentMismatch, err);
-    try std.testing.expect(iter.cur.?.offset == 14);
+    try expectEqual(14, iter.cur.?.offset);
 }
-test "Error.InvalidUtf8" {
+test "Error.InvalidUtf8 Surrogate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var iter = TextIterator.unsafeInit(
+        \\"\u{d842}"
+    );
+    const err = parseAll(&iter, arena.allocator());
+
+    try std.testing.expectError(Error.InvalidUtf8, err);
+    try expectEqual(8, iter.cur.?.offset);
+}
+test "Error.InvalidUtf8 Overflow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var iter = TextIterator.unsafeInit(
+        \\"\u{AAAAAAAAAAAAAAAAAAAAAAAAA}"
+    );
+    const err = parseAll(&iter, arena.allocator());
+
+    try std.testing.expectError(Error.InvalidUtf8, err);
+    try expectEqual(9, iter.cur.?.offset);
+}
+test "Error.UnexpectedCharacter" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -237,6 +265,6 @@ test "Error.InvalidUtf8" {
     );
     const err = parseAll(&iter, arena.allocator());
 
-    try std.testing.expectError(Error.InvalidUtf8, err);
-    try std.testing.expect(iter.cur.?.offset == 3);
+    try std.testing.expectError(Error.UnexpectedCharacter, err);
+    try expectEqual(3, iter.cur.?.offset);
 }

@@ -51,17 +51,12 @@ fn checkMinZig(current: std.SemanticVersion, exe: *std.build.LibExeObjStep) void
 pub const dirs = struct {
     pub const _root = "";
     pub const _3od6xx3o5jxd = cache ++ "/../..";
-    pub const _l21900j9ct9e = cache ++ "/v/git/github.com/jecolon/ziglyph/commit-90ac933ae37c8c11933e6d4d4a32c082116fb987";
     pub const _xzxo5rnug8wj = cache ++ "/v/git/github.com/MasterQ32/zig-args/commit-72a79c87fdf5aaa98f81796fbf6500b5c06b1ebc";
 };
 
 pub const package_data = struct {
     pub const _3od6xx3o5jxd = Package{
         .directory = dirs._3od6xx3o5jxd,
-    };
-    pub const _l21900j9ct9e = Package{
-        .directory = dirs._l21900j9ct9e,
-        .pkg = Pkg{ .name = "ziglyph", .path = .{ .path = dirs._l21900j9ct9e ++ "/src/ziglyph.zig" }, .dependencies = null },
     };
     pub const _xzxo5rnug8wj = Package{
         .directory = dirs._xzxo5rnug8wj,
@@ -73,16 +68,13 @@ pub const package_data = struct {
 };
 
 pub const packages = &[_]Package{
-    package_data._l21900j9ct9e,
     package_data._xzxo5rnug8wj,
 };
 
 pub const pkgs = struct {
-    pub const ziglyph = package_data._l21900j9ct9e;
     pub const args = package_data._xzxo5rnug8wj;
 };
 
 pub const imports = struct {
-    pub const ziglyph = @import(".zigmod/deps/v/git/github.com/jecolon/ziglyph/commit-90ac933ae37c8c11933e6d4d4a32c082116fb987/src/ziglyph.zig");
     pub const args = @import(".zigmod/deps/v/git/github.com/MasterQ32/zig-args/commit-72a79c87fdf5aaa98f81796fbf6500b5c06b1ebc/args.zig");
 };

@@ -159,8 +159,7 @@ inline fn buildIndex(ctx: *Ctx, expr: Expr) !void {
 inline fn buildType(ctx: *Ctx, func: p.Func) !void {
     if (func.args.len > 1) return error.TooMany;
     const inner = p.asFuncNamed(func.args[0], "func") orelse return error.NotFunc;
-    // FIXME: type template isn't legal
-    const use = try ctx.typeuse(inner.args);
+    const use = try ctx.typedef(inner.args);
     use.deinit(ctx);
     if (use.remain.len > 0) return error.TooMany;
     try indexFreeId(ctx.I.funcTypes, func.id);
@@ -528,6 +527,17 @@ fn valtypesCheck(self: *Ctx, args: []const Expr, comptime name: u.Txt, types: []
     }
     return args[it.i..];
 }
+fn typedef(ctx: *Ctx, args: []const Expr) !TypeUse {
+    const ps = try ctx.valtypesAlloc(args, "param");
+    const rs = try ctx.valtypesAlloc(ps.remain, "result");
+
+    const params = try ctx.gpa().alloc(?u.Txt, ps.types.len);
+
+    var remain = try ctx.valtypesRead(args, "param", ps.types, params);
+    remain = try ctx.valtypesRead(remain, "result", rs.types, null);
+
+    return TypeUse{ .val = .{ .params = ps.types, .results = rs.types }, .params = params, .remain = remain };
+}
 pub fn typeuse(ctx: *Ctx, args: []const Expr) !TypeUse {
     if (args.len > 0) if (p.asFuncNamed(args[0], "type")) |func| {
         const i = try indexFindByF(ctx.I.funcTypes, func);
@@ -540,17 +550,7 @@ pub fn typeuse(ctx: *Ctx, args: []const Expr) !TypeUse {
 
         return TypeUse{ .val = sig, .params = params, .remain = remain };
     };
-
-    // typeuse abbrev
-    const ps = try ctx.valtypesAlloc(args, "param");
-    const rs = try ctx.valtypesAlloc(ps.remain, "result");
-
-    const params = try ctx.gpa().alloc(?u.Txt, ps.types.len);
-
-    var remain = try ctx.valtypesRead(args, "param", ps.types, params);
-    remain = try ctx.valtypesRead(remain, "result", rs.types, null);
-
-    return TypeUse{ .val = .{ .params = ps.types, .results = rs.types }, .params = params, .remain = remain };
+    return ctx.typedef(args);
 }
 
 inline fn pop(ctx: *Ctx, comptime field: []const u8, import: bool) *@TypeOf(@field(ctx.m, field)[0]) {

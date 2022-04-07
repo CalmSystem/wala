@@ -10,7 +10,7 @@ It is implemented as a set of complementary extensions over standard [WebAssembl
 
 ```wal
 func $fib export()
-  u64 $n
+  u64 $n -> ?
   if {$n <= 2}
     1
     +
@@ -30,7 +30,7 @@ Is expended to:
         (call $fib (i64.sub (local.get $n) (i64.const 1)))))))
 ```
 
-For working examples, see [samples](./samples): [fib](samples/fib.wala) [fizzbuzz](./samples/fizzbuzz.wala),  [99bottles](.samples/99-bottles-of-beer.wala), ...
+For working [samples](./samples) see: [fib](./samples/fib.wala), [fizzbuzz](./samples/fizzbuzz.wala),  [99bottles](./samples/99-bottles-of-beer.wala), ...
 
 ## Install
 
@@ -56,13 +56,13 @@ PATH=$PATH:./zig-out/bin
 
 ## Usage
 
-* Run built module *(requires `wat2wasm` and `wasmtime`)*
+* Run built module *(default WASI engine: `--runtime wasmtime`)*
 ```sh
 wala run samples/hello.wala
 ```
-* Convert `test/fib.wala` to Wat
+* Convert `samples/fib.wala` to Wasm
 ```sh
-wala build samples/fib.wala
+wala build samples/fib.wala > fib.wasm
 ```
 
 ## Features

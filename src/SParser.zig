@@ -13,13 +13,13 @@ pub fn parseAll(iter: *TextIterator, alloc: std.mem.Allocator) Error![]Expr {
 }
 
 /// Does not skip block comments
-fn skipSpaces(iter: *TextIterator) void {
+fn skipSpaces(iter: *TextIterator) !void {
     while (true) {
         _ = iter.readWhile(TextIterator.isSpace);
         if (iter.peek().scalar != ';') break;
 
         iter.skip();
-        std.debug.assert(iter.peek().scalar == ';');
+        if (iter.peek().scalar != ';') return error.UnexpectedCharacter;
         iter.skip();
 
         _ = iter.readWhile(struct {
@@ -31,6 +31,7 @@ fn skipSpaces(iter: *TextIterator) void {
 }
 pub const Error = error{
     UnexpectedEndOfFile,
+    UnexpectedCharacter,
     OutOfMemory,
     InvalidUtf8,
 };
@@ -59,7 +60,7 @@ fn mayParseOneBlock(iter: *TextIterator, alloc: std.mem.Allocator, infix: bool) 
         return null;
     }
     // List
-    skipSpaces(iter);
+    try skipSpaces(iter);
 
     var list = std.ArrayList(Expr).init(alloc);
     while (iter.peek().scalar != close) {
@@ -69,7 +70,7 @@ fn mayParseOneBlock(iter: *TextIterator, alloc: std.mem.Allocator, infix: bool) 
         if (try mayParseOne(iter, alloc)) |expr|
             try list.append(expr);
 
-        skipSpaces(iter);
+        try skipSpaces(iter);
     }
     iter.skip();
 
@@ -84,8 +85,12 @@ inline fn digit(c: u21) !u8 {
         '0'...'9' => t - '0',
         'A'...'F' => t - 'A' + 10,
         'a'...'f' => t - 'a' + 10,
-        else => error.InvalidUtf8,
+        else => error.UnexpectedCharacter,
     };
+}
+inline fn nextScalar(iter: *TextIterator) !u21 {
+    const cp = iter.next() orelse return error.UnexpectedEndOfFile;
+    return cp.scalar;
 }
 inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?Expr.Val {
     const infix = iter.peek().scalar == '{';
@@ -107,9 +112,8 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
                     return error.UnexpectedEndOfFile;
 
                 if (iter.peek().scalar == '\\') {
-                    const n = iter.next() orelse
-                        return error.UnexpectedEndOfFile;
-                    switch (n.scalar) {
+                    const n = try nextScalar(iter);
+                    switch (n) {
                         't' => try str.append('\t'),
                         'n' => try str.append('\n'),
                         'r' => try str.append('\r'),
@@ -117,13 +121,26 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
                         '\'' => try str.append('\''),
                         '\\' => try str.append('\\'),
                         'u' => {
-                            unreachable;
-                            //TODO: {hexnum}
+                            if ((try nextScalar(iter)) != '{')
+                                return error.UnexpectedCharacter;
+
+                            // hexnum
+                            var cp: u21 = try digit(try nextScalar(iter));
+                            while (true) {
+                                var c = try nextScalar(iter);
+                                if (c == '}') break;
+                                if (c == '_') c = try nextScalar(iter);
+                                cp = std.math.mul(u21, cp, 16) catch return error.InvalidUtf8;
+                                cp = std.math.add(u21, cp, try digit(c)) catch return error.InvalidUtf8;
+                            }
+
+                            var buf: [4]u8 = undefined;
+                            const len = std.unicode.utf8Encode(cp, &buf) catch return error.InvalidUtf8;
+                            try str.appendSlice(buf[0..len]);
                         },
                         else => {
-                            const m = iter.next() orelse
-                                return error.UnexpectedEndOfFile;
-                            try str.append((try digit(n.scalar)) * 16 + try digit(m.scalar));
+                            const m = try nextScalar(iter);
+                            try str.append((try digit(n)) * 16 + try digit(m));
                         },
                     }
                 } else {
@@ -141,7 +158,7 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
                     };
                 }
             }.pred);
-            if (slice.len == 0) return error.InvalidUtf8;
+            if (slice.len == 0) return error.UnexpectedCharacter;
             try str.appendSlice(slice);
         }
 
@@ -155,7 +172,7 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
 }
 
 pub fn mayParseOne(iter: *TextIterator, alloc: std.mem.Allocator) Error!?Expr {
-    skipSpaces(iter);
+    try skipSpaces(iter);
     const at_offset = iter.peek().offset;
 
     const left = if (try mayParseOneVal(iter, alloc)) |val|

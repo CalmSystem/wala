@@ -129,7 +129,7 @@ pub const LinePoint = struct {
 
     pub fn init(text: u.Txt, offset: usize, path: u.Txt) LinePoint {
         std.debug.assert(u.isTxt(text));
-        var iter = TextIterator.Inner{ .bytes = text };
+        var iter = TextIterator{ .cur = null, .bytes = text };
         var p: Position = .{};
         var last_line: usize = 0;
         while (iter.next()) |cp| {
