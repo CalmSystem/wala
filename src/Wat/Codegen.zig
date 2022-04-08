@@ -921,11 +921,7 @@ fn nMemarg(exprs: []const Expr) usize {
         i += 1;
     return i;
 }
-const MemArg = struct {
-    align_: u32,
-    offset: u32 = 0,
-};
-fn memarg(exprs: []const Expr, n: u32) !MemArg {
+fn memarg(exprs: []const Expr, n: u32) !IR.Code.MemArg {
     var i: usize = 0;
     const offset = if (kvarg(exprs, "offset")) |v|
         try p.u32s(v)
@@ -936,7 +932,7 @@ fn memarg(exprs: []const Expr, n: u32) !MemArg {
     else
         n;
     if (x == 0 or (x & (x - 1)) != 0) return error.NotPow2;
-    return MemArg{ .offset = offset, .align_ = @ctz(u32, x) };
+    return IR.Code.MemArg{ .offset = offset, .align_ = @ctz(u32, x) };
 }
 const FoundBlock = struct {
     idx: usize,

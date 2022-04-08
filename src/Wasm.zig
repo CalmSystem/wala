@@ -192,6 +192,85 @@ fn Emitter(comptime Writer: type) type {
     };
 }
 
+pub const CodeReader = struct {
+    it: std.io.FixedBufferStream(u.Bin),
+
+    const Self = @This();
+
+    pub fn init(code: u.Bin) Self {
+        std.debug.assert(code.len > 1 and code[code.len - 1] == std.wasm.opcode(.end));
+        return .{ .it = std.io.fixedBufferStream(code[0 .. code.len - 1]) };
+    }
+    inline fn reader(self: *Self) std.io.FixedBufferStream(u.Bin).Reader {
+        return self.it.reader();
+    }
+    pub fn uleb32(self: *Self) !u32 {
+        return std.leb.readULEB128(u32, self.reader());
+    }
+    fn byteToEnum(comptime Enum: type, tag: u8) ?Enum {
+        inline for (std.meta.fields(Enum)) |field|
+            if (tag == field.value)
+                return @field(Enum, field.name);
+        return null;
+    }
+    pub fn valtype(self: *Self) !IR.Valtype {
+        const byte = try self.reader().readByte();
+        return byteToEnum(IR.Valtype, byte) orelse return error.InvalidValue;
+    }
+    const Op = struct {
+        op: IR.Code.Op,
+        arg: union(enum) {
+            none,
+            blocktype: Blocktype,
+            idx: u32,
+            memarg: IR.Code.MemArg,
+            int: i64,
+            float: f64,
+        },
+
+        const Blocktype = union(enum) {
+            empty,
+            valtype: IR.Valtype,
+            idx: u32,
+        };
+    };
+    pub fn next(self: *Self) !?Op {
+        if (self.it.pos >= self.it.buffer.len) return null;
+
+        const byte = try self.reader().readByte();
+        const op = byteToEnum(IR.Code.Op, byte) orelse return error.InvalidValue;
+        return Op{
+            .op = op,
+            .arg = switch (op) {
+                .i32_const => .{ .int = try std.leb.readILEB128(i32, self.reader()) },
+                .i64_const => .{ .int = try std.leb.readILEB128(i64, self.reader()) },
+                .f32_const => .{ .float = @intToFloat(f32, try self.reader().readIntLittle(i32)) },
+                .f64_const => .{ .float = @intToFloat(f64, try self.reader().readIntLittle(i64)) },
+                .i32_load, .i64_load, .f32_load, .f64_load, .i32_load8_s, .i32_load8_u, .i32_load16_s, .i32_load16_u, .i64_load8_s, .i64_load8_u, .i64_load16_s, .i64_load16_u, .i64_load32_s, .i64_load32_u, .i32_store, .i64_store, .f32_store, .f64_store, .i32_store8, .i32_store16, .i64_store8, .i64_store16, .i64_store32 => .{ .memarg = .{ .align_ = try self.uleb32(), .offset = try self.uleb32() } },
+                .local_get, .local_set, .local_tee, .call, .br, .br_if => .{ .idx = try self.uleb32() },
+                .@"if", .block, .loop => blocktype: {
+                    if (self.it.pos >= self.it.buffer.len) return error.EndOfStream;
+                    const c = self.it.buffer[self.it.pos];
+                    const blocktype = if (c == std.wasm.block_empty) blk: {
+                        self.it.pos += 1;
+                        break :blk .empty;
+                    } else if (byteToEnum(IR.Valtype, c)) |v| blk: {
+                        self.it.pos += 1;
+                        break :blk Op.Blocktype{ .valtype = v };
+                    } else Op.Blocktype{ .idx = try self.uleb32() };
+                    break :blocktype .{ .blocktype = blocktype };
+                },
+                .@"unreachable", .nop, .drop, .@"else", .end, .i32_eqz, .i32_eq, .i32_ne, .i32_lt_s, .i32_lt_u, .i32_gt_s, .i32_gt_u, .i32_le_s, .i32_le_u, .i32_ge_s, .i32_ge_u, .i64_eqz, .i64_eq, .i64_ne, .i64_lt_s, .i64_lt_u, .i64_gt_s, .i64_gt_u, .i64_le_s, .i64_le_u, .i64_ge_s, .i64_ge_u, .f32_eq, .f32_ne, .f32_lt, .f32_gt, .f32_le, .f32_ge, .f64_eq, .f64_ne, .f64_lt, .f64_gt, .f64_le, .f64_ge, .i32_clz, .i32_ctz, .i32_popcnt, .i32_add, .i32_sub, .i32_mul, .i32_div_s, .i32_div_u, .i32_rem_s, .i32_rem_u, .i32_and, .i32_or, .i32_xor, .i32_shl, .i32_shr_s, .i32_shr_u, .i32_rotl, .i32_rotr, .i64_clz, .i64_ctz, .i64_popcnt, .i64_add, .i64_sub, .i64_mul, .i64_div_s, .i64_div_u, .i64_rem_s, .i64_rem_u, .i64_and, .i64_or, .i64_xor, .i64_shl, .i64_shr_s, .i64_shr_u, .i64_rotl, .i64_rotr, .f32_abs, .f32_neg, .f32_ceil, .f32_floor, .f32_trunc, .f32_nearest, .f32_sqrt, .f32_add, .f32_sub, .f32_mul, .f32_div, .f32_min, .f32_max, .f32_copysign, .f64_abs, .f64_neg, .f64_ceil, .f64_floor, .f64_trunc, .f64_nearest, .f64_sqrt, .f64_add, .f64_sub, .f64_mul, .f64_div, .f64_min, .f64_max, .f64_copysign, .i32_wrap_i64, .i32_trunc_f32_s, .i32_trunc_f32_u, .i32_trunc_f64_s, .i32_trunc_f64_u, .i64_extend_i32_s, .i64_extend_i32_u, .i64_trunc_f32_s, .i64_trunc_f32_u, .i64_trunc_f64_s, .i64_trunc_f64_u, .f32_convert_i32_s, .f32_convert_i32_u, .f32_convert_i64_s, .f32_convert_i64_u, .f32_demote_f64, .f64_convert_i32_s, .f64_convert_i32_u, .f64_convert_i64_s, .f64_convert_i64_u, .f64_promote_f32, .i32_reinterpret_f32, .i64_reinterpret_f64, .f32_reinterpret_i32, .f64_reinterpret_i64, .i32_extend8_s, .i32_extend16_s, .i64_extend8_s, .i64_extend16_s, .i64_extend32_s => .none,
+                //TODO: remove else branch
+                else => blk: {
+                    std.log.warn("Unhandled CodeRead {}", .{op});
+                    break :blk .none;
+                },
+            },
+        };
+    }
+};
+
 test "empty module" {
     var empty: [8]u8 = undefined;
     std.mem.copy(u8, &empty, &std.wasm.magic);

@@ -1,5 +1,6 @@
 const u = @import("util.zig");
 const std = @import("std");
+const TextIterator = @import("TextIterator.zig");
 
 const Expr = @This();
 
@@ -144,8 +145,23 @@ pub const Val = union(enum) {
             },
             .string => |str| {
                 try writer.writeByte('"');
-                //FIXME: must escape
-                try writer.writeAll(str);
+                var it = TextIterator{ .bytes = str, .cur = null };
+                while (it.next()) |cp| {
+                    const c = cp.scalar;
+                    const bytes = switch (c) {
+                        '\t' => "\\t",
+                        '\n' => "\\n",
+                        '\r' => "\\r",
+                        '\"' => "\\\"",
+                        '\'' => "\\\'",
+                        '\\' => "\\\\",
+                        else => if (c < 128 and std.ascii.isPrint(@truncate(u8, c))) cp.bytes else blk: {
+                            try writer.print("\\u{{{X}}}", .{c});
+                            break :blk "";
+                        },
+                    };
+                    try writer.writeAll(bytes);
+                }
                 try writer.writeByte('"');
             },
         }

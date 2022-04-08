@@ -183,6 +183,10 @@ pub const Code = struct {
     relocs: []const Linking.Reloc.Entry = &[_]Linking.Reloc.Entry{},
 
     pub const Op = std.wasm.Opcode;
+    pub const MemArg = struct {
+        align_: u32,
+        offset: u32 = 0,
+    };
 };
 
 pub const ImportName = struct {

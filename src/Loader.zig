@@ -47,4 +47,5 @@ pub fn writeText(m: IR.Module, writer: anytype, alloc: std.mem.Allocator, fmt: @
     defer wat.deinit(alloc);
 
     try wat.print(fmt, writer);
+    try writer.writeByte('\n');
 }
