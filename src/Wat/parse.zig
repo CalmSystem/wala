@@ -20,21 +20,11 @@ inline fn digit(c: u8, hexnum: bool) !u8 {
         else => null,
     } orelse error.NotDigit;
 }
-fn iN(arg: Expr, comptime N: u16) !IN(N) {
-    const str = arg.val.asKeyword() orelse return error.NotInt;
-    var i: usize = 0;
+fn num(comptime V: type, str: u.Txt, hexnum: bool) !V {
+    if (str.len == 0) return error.Empty;
+    var v: V = try digit(str[0], hexnum);
 
-    const sign = str[i] == '-';
-    if (sign or str[i] == '+') i += 1;
-
-    const hexnum = std.mem.startsWith(u8, str[i..], "0x");
-    if (hexnum) i += 2;
-
-    if (str.len <= i) return error.Empty;
-    const V = IN(N);
-    var v: V = try digit(str[i], hexnum);
-    i += 1;
-
+    var i: usize = 1;
     while (i < str.len) : (i += 1) {
         if (str[i] == '_') {
             i += 1;
@@ -44,39 +34,93 @@ fn iN(arg: Expr, comptime N: u16) !IN(N) {
         v = try std.math.mul(V, v, @as(u8, if (hexnum) 16 else 10));
         v = try std.math.add(V, v, d);
     }
+    return v;
+}
+fn iN(str: u.Txt, comptime N: u16) !IN(N) {
+    var i: usize = 0;
+
+    if (str.len == 0) return error.Empty;
+    const sign = str[i] == '-';
+    if (sign or str[i] == '+') i += 1;
+
+    const hexnum = std.mem.startsWith(u8, str[i..], "0x");
+    if (hexnum) i += 2;
+
+    var v = try num(IN(N), str[i..], hexnum);
     if (sign)
         v = try std.math.negate(v);
 
     return v;
 }
-fn uN(arg: Expr, comptime N: u16) !UN(N) {
-    const i = try iN(arg, N);
+fn uN(str: u.Txt, comptime N: u16) !UN(N) {
+    const i = try iN(str, N);
     if (i < 0) return error.Signed;
     return std.math.lossyCast(UN(N), i);
 }
-fn sN(arg: Expr, comptime N: u16) !SN(N) {
-    return iN(arg, N - 1);
+fn sN(str: u.Txt, comptime N: u16) !SN(N) {
+    return iN(str, N - 1);
 }
-pub fn u32_(arg: Expr) !u32 {
-    return uN(arg, 32);
+pub fn fNs(str: u.Txt) !f64 {
+    var i: usize = 0;
+
+    if (str.len == 0) return error.Empty;
+    const sign = str[i] == '-';
+    if (sign or str[i] == '+') i += 1;
+
+    var v = if (u.strEql("inf", str[i..]))
+        std.math.inf_f64
+    else if (std.mem.startsWith(u8, str[i..], "nan")) blk: {
+        // MAYBE: support nan:0x hexnum
+        if (str[i..].len > 3) return error.TooMany;
+        break :blk std.math.nan_f64;
+    } else blk: {
+        // NOTE: not correct on i64 overflow
+        const hexnum = std.mem.startsWith(u8, str[i..], "0x");
+        if (hexnum) i += 2;
+
+        const dot = std.mem.indexOfScalar(u8, str[i..], '.');
+        var p = @intToFloat(f64, try num(i64, if (dot) |j| str[i .. i + j] else str[i..], hexnum));
+        if (dot == null or i + dot.? + 1 >= str.len) break :blk p;
+
+        i += dot.? + 1;
+        const pow = std.mem.indexOfScalar(u8, str[i..], 'p') orelse std.mem.indexOfScalar(u8, str[i..], 'P');
+        if (pow == null or str.len > pow.? + 1) {
+            const q = @intToFloat(f64, try num(i64, if (pow) |j| str[i .. i + j] else str[i..], hexnum));
+            p *= (1.0 / q);
+        }
+
+        if (pow != null) { //exp
+            i += pow.? + 1;
+            if (str.len >= i) return error.Empty;
+            const exp_sign = str[i] == '-';
+            if (exp_sign or str[i] == '+') i += 1;
+            var e = @intToFloat(f64, try num(i64, str[i..], false));
+            if (exp_sign)
+                e *= -1;
+            p *= std.math.pow(f64, 2, e);
+        }
+        break :blk p;
+    };
+    if (sign)
+        v *= -1;
+
+    return v;
 }
-pub fn i32_(arg: Expr) !i32 {
-    return sN(arg, 32);
+
+pub fn keyword(arg: Expr) !u.Txt {
+    return arg.val.asKeyword() orelse return error.NotKeyword;
 }
-pub fn i64_(arg: Expr) !i64 {
-    return sN(arg, 64);
+pub fn u32s(str: u.Txt) !u32 {
+    return uN(str, 32);
 }
-inline fn kv(str: u.Txt) Expr {
-    return .{ .val = .{ .keyword = str } };
+pub fn i32s(str: u.Txt) !i32 {
+    return sN(str, 32);
 }
-pub inline fn u32s(str: u.Txt) !u32 {
-    return u32_(kv(str));
+pub fn i64s(str: u.Txt) !i64 {
+    return sN(str, 64);
 }
-pub inline fn i32s(str: u.Txt) !i32 {
-    return i32_(kv(str));
-}
-pub inline fn i64s(str: u.Txt) !i64 {
-    return i64_(kv(str));
+pub inline fn u32_(arg: Expr) !u32 {
+    return u32s(try keyword(arg));
 }
 
 pub const Func = struct {

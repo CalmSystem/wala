@@ -1,0 +1,18 @@
+func export("pi")
+  param $i u32
+  result f64
+  local $k f64
+  local $s f64
+  {$k = 1f64}
+  {$s = 0f64}
+  loop
+    = $s
+      + $s
+        if (result f64)
+          {$i % 2}
+          {-4f64 / $k}
+          {4f64 / $k}
+    {$k = {$k + 2f64}}
+    {$i = {$i - 1}}
+    br_if 0 $i
+  $s

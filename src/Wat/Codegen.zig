@@ -76,7 +76,7 @@ const Error = error{
     Empty,
     NotDigit,
     Overflow,
-    NotInt,
+    NotKeyword,
     OutOfMemory,
     Signed,
     TypeMismatch,
@@ -240,8 +240,9 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
             const head = operation.name[0 .. operation.name.len - 3 + @boolToInt(n8)];
             const tail = operation.name[operation.name.len - 3 + @boolToInt(n8) ..];
             if (std.meta.stringToEnum(Hardtype, tail)) |typ| {
-                switch (typ) {
-                    .i32, .s32, .u32, .u16, .s16, .u8, .s8 => if (p.i32s(head) catch null) |i| {
+                const ok = switch (typ) {
+                    .i32, .s32, .u32, .u16, .s16, .u8, .s8 => blk: {
+                        const i = p.i32s(head) catch break :blk false;
                         const unsigned = switch (typ) {
                             .u32, .u16, .u8 => true,
                             else => false,
@@ -251,31 +252,41 @@ fn popInst(codegen: *Codegen, in: []const Expr) Error![]const Expr {
 
                         try codegen.opcode(.i32_const);
                         try codegen.ileb(i);
-
-                        try codegen.push(typ);
+                        break :blk true;
                     },
-                    .i64, .s64, .u64 => if (p.i64s(head) catch null) |i| {
+                    .i64, .s64, .u64 => blk: {
+                        const i = p.i64s(head) catch break :blk false;
                         if (typ == .u64 and i < 0) return error.Signed;
                         try codegen.opcode(.i64_const);
                         try codegen.ileb(i);
-
-                        try codegen.push(typ);
+                        break :blk true;
                     },
-                    .f32, .f64 => @panic("WIP"),
+                    .f32, .f64 => blk: {
+                        const f = p.fNs(head) catch break :blk false;
+                        if (typ == .f64) {
+                            try codegen.opcode(.f64_const);
+                            try codegen.writer().writeIntNative(u64, @bitCast(u64, f));
+                        } else {
+                            try codegen.opcode(.f32_const);
+                            try codegen.writer().writeIntNative(u32, @bitCast(u32, @floatCast(f32, f)));
+                        }
+                        break :blk true;
+                    },
+                };
+                if (ok) {
+                    try codegen.push(typ);
+                    return operation.args;
                 }
-                return operation.args;
             }
         }
 
-        if (operation.name.len > 0) { // num
+        if (operation.name.len > 0) { // Int litteral const
             const tail = switch (operation.name[operation.name.len - 1]) {
-                'i', 's', 'u', 'f' => operation.name[operation.name.len - 1],
+                'i', 's', 'u' => operation.name[operation.name.len - 1],
                 else => null,
             };
             const head = operation.name[0 .. operation.name.len - @boolToInt(tail != null)];
-            //TODO: if (tail == 'f') Float litteral const
 
-            // Int litteral const
             if (p.i64s(head) catch null) |i| {
                 if (i < std.math.maxInt(i32) and i > std.math.minInt(i32)) {
                     const at = codegen.bytes.items.len;
@@ -377,7 +388,8 @@ const Op = struct {
         return switch (op) {
             .i32_const => comptime iNconst(.i32, false),
             .i64_const => comptime iNconst(.i64, true),
-            //fN_const
+            .f32_const => comptime fNconst(.f32, false),
+            .f64_const => comptime fNconst(.f64, true),
             .i32_load => comptime tNload(.i32, 4),
             .i64_load => comptime tNload(.i64, 8),
             .f32_load => comptime tNload(.f32, 4),
@@ -718,7 +730,23 @@ const Op = struct {
             fn Gen(comptime Is64: bool) type {
                 return struct {
                     fn gen(self: *Codegen, func: F) !?[]const Expr {
-                        try self.ileb(try if (Is64) p.i64_(func.args[0]) else p.i32_(func.args[0]));
+                        const kv = try p.keyword(func.args[0]);
+                        try self.ileb(try if (Is64) p.i64s(kv) else p.i32s(kv));
+                        return null;
+                    }
+                };
+            }
+        }.Gen(is64).gen };
+    }
+    inline fn fNconst(val: Hardtype, comptime is64: bool) Op {
+        return .{ .narg = Narg.one, .stack = .{ .push = &[_]Hardtype{val} }, .gen = struct {
+            fn Gen(comptime Is64: bool) type {
+                return struct {
+                    fn gen(self: *Codegen, func: F) !?[]const Expr {
+                        const f = try p.fNs(try p.keyword(func.args[0]));
+                        const I = if (Is64) u64 else u32;
+                        const i = @bitCast(I, @floatCast(if (Is64) f64 else f32, f));
+                        try self.writer().writeIntNative(I, i);
                         return null;
                     }
                 };
