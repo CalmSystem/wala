@@ -19,3 +19,9 @@ pub inline fn toTxt(v: Bin) !Txt {
 pub inline fn strEql(a: Txt, b: Txt) bool {
     return std.mem.eql(u8, a, b);
 }
+
+pub inline fn constSliceExpand(comptime T: type, allocator: std.mem.Allocator, slice: *[]const T, n: usize) ![]T {
+    const resized = try allocator.realloc(@intToPtr(*[]T, @ptrToInt(slice)).*, slice.len + n);
+    slice.* = resized;
+    return resized[resized.len - n ..];
+}

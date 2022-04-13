@@ -162,7 +162,7 @@ fn int(v: i64, allocator: std.mem.Allocator) !Expr {
 
 fn sizeCode(code: IR.Code, hasLocals: bool) !usize {
     var n: usize = 0;
-    var reader = Wasm.CodeReader.init(code.bytes);
+    var reader = Wasm.CodeReader.initExpr(code.bytes);
     if (hasLocals) {
         const nLocals = try reader.uleb32();
         if (nLocals > 0) {
@@ -170,7 +170,7 @@ fn sizeCode(code: IR.Code, hasLocals: bool) !usize {
             n += 1;
         }
     }
-    while (try reader.next()) |inst| {
+    while (try reader.nextOp()) |inst| {
         n += 1 + @as(usize, switch (inst.arg) {
             .none => 0,
             .int, .float, .idx => 1,
@@ -193,7 +193,7 @@ inline fn opToKeyword(op: IR.Code.Op, allocator: std.mem.Allocator) std.mem.Allo
 }
 fn emitCode(code: IR.Code, out: *Arr, allocator: std.mem.Allocator, hasLocals: bool) !void {
     //TODO: relocate
-    var reader = Wasm.CodeReader.init(code.bytes);
+    var reader = Wasm.CodeReader.initExpr(code.bytes);
     if (hasLocals) {
         var nLocals = try reader.uleb32();
         if (nLocals > 0) {
@@ -207,7 +207,7 @@ fn emitCode(code: IR.Code, out: *Arr, allocator: std.mem.Allocator, hasLocals: b
             out.append(arr.finish());
         }
     }
-    while (try reader.next()) |inst| {
+    while (try reader.nextOp()) |inst| {
         out.append(try opToKeyword(inst.op, allocator));
         switch (inst.arg) {
             .none => {},

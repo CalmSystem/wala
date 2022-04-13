@@ -114,6 +114,14 @@ pub const Sigtype = enum {
             .f64 => .f64,
         };
     }
+    pub fn upper(a: Numtype) Sigtype {
+        return switch (a) {
+            .i32 => .i32,
+            .i64 => .i64,
+            .f32 => .f32,
+            .f64 => .f64,
+        };
+    }
     pub fn eql(a: Sigtype, b: Sigtype) bool {
         return @enumToInt(a) == @enumToInt(b);
     }

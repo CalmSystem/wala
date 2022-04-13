@@ -274,7 +274,7 @@ fn loadFunc(ctx: *Ctx, fp: *FuncProgress, id: ?u.Txt) !void {
     // locals
     const locals = try ctx.valtypesAlloc(t.insts, "local");
 
-    var local_ids = try constSliceExpand(?u.Txt, ctx.gpa(), &t.params, locals.types.len);
+    var local_ids = try u.constSliceExpand(?u.Txt, ctx.gpa(), &t.params, locals.types.len);
     defer ctx.gpa().free(t.params);
 
     const insts = try ctx.valtypesRead(t.insts, "local", locals.types, local_ids);
@@ -312,7 +312,7 @@ inline fn loadExport(ctx: *Ctx, args: []const Expr) !void {
         else => return error.BadExport,
     };
 
-    const new = try constSliceExpand(IR.ExportName, ctx.m_allocator(), exports, 1);
+    const new = try u.constSliceExpand(IR.ExportName, ctx.m_allocator(), exports, 1);
     new[0] = name;
 }
 fn loadData(ctx: *Ctx, args: []const Expr, id: ?u.Txt) !IR.Data {
@@ -568,10 +568,4 @@ inline fn m_allocator(ctx: *Ctx) std.mem.Allocator {
 }
 inline fn gpa(ctx: *Ctx) std.mem.Allocator {
     return ctx.arena.child_allocator;
-}
-
-inline fn constSliceExpand(comptime T: type, allocator: std.mem.Allocator, slice: *[]const T, n: usize) ![]T {
-    const resized = try allocator.realloc(@intToPtr(*[]T, @ptrToInt(slice)).*, slice.len + n);
-    slice.* = resized;
-    return resized[resized.len - n ..];
 }

@@ -2,204 +2,180 @@ const std = @import("std");
 const u = @import("util.zig");
 const IR = @import("IR.zig");
 
-pub fn load(_: u.Bin, allocator: std.mem.Allocator) !IR.Module {
-    //TODO: implem
-    return IR.Module.init(allocator);
+const Emit = @import("Wasm/Emit.zig");
+pub const Opt = Emit.Opt;
+pub const emit = Emit.emit;
+
+pub fn load(bin: u.Bin, allocator: std.mem.Allocator) !IR.Module {
+    var it = CodeReader.initBuffer(bin);
+    if (!u.strEql(&std.wasm.magic, try it.readSlice(std.wasm.magic.len)))
+        return error.WrongMagic;
+    if (!u.strEql(&std.wasm.version, try it.readSlice(std.wasm.version.len)))
+        return error.UnsupportedVersion;
+
+    var m = IR.Module.init(allocator);
+
+    var types = std.ArrayListUnmanaged(IR.Func.Sig){};
+    var funcs = std.ArrayListUnmanaged(IR.Func){};
+    defer {
+        types.deinit(allocator);
+        funcs.deinit(allocator);
+    }
+    // const customs = std.ArrayListUnmanaged(IR.Section.Custom){};
+
+    while (!it.finished()) {
+        const kind = byteToEnum(std.wasm.Section, try it.reader().readByte()) orelse return error.UnexpectedSection;
+        var body = CodeReader.initBuffer(try it.readSlice(try it.uleb32()));
+        switch (kind) {
+            .type => {
+                var n = try body.uleb32();
+                try types.ensureUnusedCapacity(allocator, n);
+                while (n > 0) : (n -= 1) {
+                    if ((try body.reader().readByte()) != std.wasm.function_type)
+                        return error.BadFuncType;
+
+                    const ps = try m.arena.allocator().alloc(IR.Sigtype, try body.uleb32());
+                    var np: usize = 0;
+                    while (np < ps.len) : (np += 1)
+                        ps[np] = IR.Sigtype.upper(try body.valtype());
+                    const rs = try m.arena.allocator().alloc(IR.Sigtype, try body.uleb32());
+                    np = 0;
+                    while (np < rs.len) : (np += 1)
+                        rs[np] = IR.Sigtype.upper(try body.valtype());
+                    types.appendAssumeCapacity(.{ .params = ps, .results = rs });
+                }
+            },
+            .import => {
+                var n = try body.uleb32();
+                while (n > 0) : (n -= 1) {
+                    const name = IR.ImportName{
+                        .module = try body.string(m.arena.allocator()),
+                        .name = try body.string(m.arena.allocator()),
+                    };
+                    switch (byteToEnum(std.wasm.ExternalKind, try body.reader().readByte()) orelse return error.NotDesc) {
+                        .function => {
+                            const typ = try body.uleb32();
+                            if (typ >= types.items.len) return error.NotFound;
+                            try funcs.append(allocator, .{
+                                .body = .{ .import = name },
+                                .id = null,
+                                .type = types.items[typ],
+                            });
+                        },
+                        else => unreachable, //FIXME:
+                    }
+                }
+            },
+            .function => {
+                var n = try body.uleb32();
+                try funcs.ensureUnusedCapacity(allocator, n);
+                while (n > 0) : (n -= 1) {
+                    const typ = try body.uleb32();
+                    if (typ >= types.items.len) return error.NotFound;
+                    funcs.appendAssumeCapacity(.{
+                        .body = .{ .code = .{ .bytes = "" } },
+                        .id = null,
+                        .type = types.items[typ],
+                    });
+                }
+            },
+            .memory => {
+                const n = try body.uleb32();
+                std.debug.assert(n <= 1);
+                if (n > 0) {
+                    std.debug.assert(m.memory == null);
+                    m.memory = IR.Memory{ .id = null, .size = try body.limits() };
+                }
+            },
+            .@"export" => {
+                var n = try body.uleb32();
+                while (n > 0) : (n -= 1) {
+                    const name = try body.string(m.arena.allocator());
+                    const desc = byteToEnum(std.wasm.ExternalKind, try body.reader().readByte()) orelse return error.NotDesc;
+                    const id = try body.uleb32();
+                    const exs = switch (desc) {
+                        .function => blk: {
+                            if (id >= funcs.items.len) return error.NotFound;
+                            break :blk &funcs.items[id].exports;
+                        },
+                        .memory => blk: {
+                            if (m.memory == null or id != 0) return error.NotFound;
+                            break :blk &m.memory.?.exports;
+                        },
+                        else => unreachable, //FIXME:
+                    };
+                    const new = try u.constSliceExpand(IR.ExportName, m.arena.allocator(), exs, 1);
+                    new[0] = name;
+                }
+            },
+            .code => {
+                var n = try body.uleb32();
+                while (n > 0) : (n -= 1) {
+                    const f: *IR.Func = for (funcs.items) |*a_f| {
+                        if (a_f.body == .code and a_f.body.code.bytes.len == 0)
+                            break a_f;
+                    } else return error.NotFound;
+                    const slice = try body.readSlice(try body.uleb32());
+                    const code = try m.arena.allocator().dupe(u8, slice);
+                    //FIXME: must iter to bundle types and check depth
+                    f.body = .{ .code = .{ .bytes = code } };
+                }
+            },
+            .data => {
+                var n = try body.uleb32();
+                const new = try u.constSliceExpand(IR.Data, m.arena.allocator(), &m.datas, n);
+                while (n > 0) : (n -= 1) {
+                    const seg = try body.reader().readByte();
+                    new[new.len - n] = .{ .body = switch (seg) {
+                        1 => .{ .passive = try body.byteVec(m.arena.allocator()) },
+                        0, 2 => blk: {
+                            if (seg == 2) {
+                                const mem = try body.uleb32();
+                                std.debug.assert(mem == 0);
+                            }
+                            var code = CodeReader.initBuffer(body.it.buffer[body.it.pos..]);
+                            var depth: usize = 1;
+                            while (depth > 0) {
+                                const op = (try code.nextOp()) orelse return error.Empty;
+                                if (op.arg == .blocktype) depth += 1;
+                                if (op.op == .end) depth -= 1;
+                            }
+                            const offset = try m.arena.allocator().dupe(u8, try body.readSlice(code.it.pos));
+                            break :blk .{ .active = .{ .mem = 0, .offset = .{ .bytes = offset }, .content = try body.byteVec(m.arena.allocator()) } };
+                        },
+                        else => return error.InvalidValue,
+                    }, .id = null };
+                }
+            },
+            else => {
+                std.log.debug("{} {any}", .{ kind, body.it.buffer });
+                return error.UnexpectedSection;
+            },
+        }
+        std.debug.assert(body.finished());
+    }
+
+    m.funcs = try m.arena.allocator().dupe(IR.Func, funcs.items);
+    return m;
 }
 
-pub const Opt = struct {};
-pub fn emit(m: IR.Module, writer: anytype, comptime opt: Opt) !void {
-    const e = Emitter(@TypeOf(writer)){ .writer = writer, .m = &m, .opt = opt };
-
-    try writer.writeAll(&std.wasm.magic);
-    try writer.writeAll(&std.wasm.version);
-
-    try e.section(.type);
-    try e.section(.import);
-    try e.section(.function);
-    //TODO: try e.section(.table);
-    try e.section(.memory);
-    //TODO: try e.section(.global);
-    try e.section(.@"export");
-    try e.section(.code);
-    try e.section(.data);
-
-    //TODO: custom linking
+fn byteToEnum(comptime Enum: type, tag: u8) ?Enum {
+    inline for (std.meta.fields(Enum)) |field|
+        if (tag == field.value)
+            return @field(Enum, field.name);
+    return null;
 }
-
-fn Emitter(comptime Writer: type) type {
-    return struct {
-        writer: Writer,
-        m: *const IR.Module,
-        opt: Opt,
-
-        const E = @This();
-
-        pub fn section(e: E, comptime kind: std.wasm.Section) !void {
-            // A bit too meta...
-            const fn_name = @tagName(kind) ++ "Section";
-
-            var size = std.io.countingWriter(std.io.null_writer);
-            const se = Emitter(@TypeOf(size).Writer){ .m = e.m, .opt = e.opt, .writer = size.writer() };
-            try @field(se, fn_name)();
-            if (size.bytes_written == 0) return;
-
-            try e.byte(std.wasm.section(kind));
-            try e.uleb(size.bytes_written);
-            try @field(e, fn_name)();
-        }
-
-        fn uleb(e: E, v: usize) !void {
-            return std.leb.writeULEB128(e.writer, v);
-        }
-        fn string(e: E, str: u.Bin) !void {
-            try e.uleb(str.len);
-            try e.writer.writeAll(str);
-        }
-        fn byte(e: E, b: u8) !void {
-            return e.writer.writeByte(b);
-        }
-        fn limits(e: E, l: std.wasm.Limits) !void {
-            try e.byte(@boolToInt(l.max != null));
-            try e.uleb(l.min);
-            if (l.max) |max|
-                try e.uleb(max);
-        }
-
-        fn typeSection(e: E) !void {
-            //MAYBE: deduplicate
-            //NOTE: reftype not handled...
-            if (e.m.funcs.len == 0) return;
-
-            try e.uleb(e.m.funcs.len);
-            for (e.m.funcs) |func| {
-                try e.byte(std.wasm.function_type);
-                try e.uleb(func.type.params.len);
-                for (func.type.params) |param|
-                    try e.byte(std.wasm.valtype(param.lower()));
-                try e.uleb(func.type.results.len);
-                for (func.type.results) |ret|
-                    try e.byte(std.wasm.valtype(ret.lower()));
-            }
-        }
-        fn importSection(e: E) !void {
-            var len: usize = 0;
-            var iter = e.m.imports();
-            while (iter.next() != null) len += 1;
-            if (len == 0) return;
-
-            try e.uleb(len);
-            iter = e.m.imports();
-            while (iter.next()) |cur| {
-                try e.string(cur.key.module);
-                try e.string(cur.key.name);
-                try e.byte(@enumToInt(cur.kind));
-                switch (cur.kind) {
-                    .function => try e.uleb(cur.index),
-                    .table => {
-                        const t = &e.m.tables[cur.index];
-                        try e.byte(std.wasm.reftype(t.type));
-                        try e.limits(t.size);
-                    },
-                    .memory => try e.limits(e.m.memory.?.size),
-                    .global => {
-                        const g = &e.m.globals[cur.index];
-                        try e.byte(std.wasm.valtype(g.type.lower()));
-                        try e.byte(@boolToInt(g.mutable));
-                    },
-                }
-            }
-        }
-        fn functionSection(e: E) !void {
-            var len: usize = 0;
-            for (e.m.funcs) |func| {
-                switch (func.body) {
-                    .code => len += 1,
-                    else => {},
-                }
-            }
-            if (len == 0) return;
-
-            try e.uleb(len);
-            for (e.m.funcs) |func, i| {
-                switch (func.body) {
-                    .code => try e.uleb(i),
-                    else => {},
-                }
-            }
-        }
-        fn memorySection(e: E) !void {
-            if (e.m.memory) |mem| if (mem.import == null) {
-                try e.uleb(1);
-                try e.limits(mem.size);
-            };
-        }
-        fn exportSection(e: E) !void {
-            var len: usize = 0;
-            var iter = e.m.exports();
-            while (iter.next() != null) len += 1;
-            if (len == 0) return;
-
-            iter = e.m.exports();
-            try e.uleb(len);
-            while (iter.next()) |cur| {
-                try e.string(cur.key);
-                try e.byte(@enumToInt(cur.kind));
-                try e.uleb(cur.index);
-            }
-        }
-        fn codeSection(e: E) !void {
-            var len: usize = 0;
-            for (e.m.funcs) |func| {
-                switch (func.body) {
-                    .code => len += 1,
-                    else => {},
-                }
-            }
-            if (len == 0) return;
-
-            try e.uleb(len);
-            for (e.m.funcs) |func| {
-                switch (func.body) {
-                    .code => |code| try e.string(code.bytes),
-                    else => {},
-                }
-            }
-        }
-        fn dataSection(e: E) !void {
-            if (e.m.datas.len == 0) return;
-
-            try e.uleb(e.m.datas.len);
-            for (e.m.datas) |data| {
-                switch (data.body) {
-                    .active => |act| {
-                        if (act.mem == 0) {
-                            try e.byte(0);
-                        } else {
-                            try e.byte(2);
-                            try e.uleb(act.mem);
-                        }
-                        try e.writer.writeAll(act.offset.bytes);
-                        try e.string(act.content);
-                    },
-                    .passive => |pas| {
-                        try e.byte(1);
-                        try e.string(pas);
-                    },
-                }
-            }
-        }
-    };
-}
-
 pub const CodeReader = struct {
     it: std.io.FixedBufferStream(u.Bin),
 
     const Self = @This();
 
-    pub fn init(code: u.Bin) Self {
+    pub fn initBuffer(buffer: u.Bin) Self {
+        return .{ .it = std.io.fixedBufferStream(buffer) };
+    }
+    pub fn initExpr(code: u.Bin) Self {
         std.debug.assert(code.len > 1 and code[code.len - 1] == std.wasm.opcode(.end));
-        return .{ .it = std.io.fixedBufferStream(code[0 .. code.len - 1]) };
+        return initBuffer(code[0 .. code.len - 1]);
     }
     inline fn reader(self: *Self) std.io.FixedBufferStream(u.Bin).Reader {
         return self.it.reader();
@@ -207,15 +183,28 @@ pub const CodeReader = struct {
     pub fn uleb32(self: *Self) !u32 {
         return std.leb.readULEB128(u32, self.reader());
     }
-    fn byteToEnum(comptime Enum: type, tag: u8) ?Enum {
-        inline for (std.meta.fields(Enum)) |field|
-            if (tag == field.value)
-                return @field(Enum, field.name);
-        return null;
-    }
     pub fn valtype(self: *Self) !IR.Valtype {
         const byte = try self.reader().readByte();
         return byteToEnum(IR.Valtype, byte) orelse return error.InvalidValue;
+    }
+    pub inline fn readSlice(self: *Self, len: usize) !u.Bin {
+        if (self.it.pos + len > self.it.buffer.len) return error.EndOfStream;
+        const start = self.it.buffer[self.it.pos..];
+        self.it.pos += len;
+        return start[0..len];
+    }
+    pub fn byteVec(self: *Self, allocator: std.mem.Allocator) !u.Bin {
+        return allocator.dupe(u8, try self.readSlice(try self.uleb32()));
+    }
+    pub fn string(self: *Self, allocator: std.mem.Allocator) !u.Txt {
+        return u.toTxt(try self.byteVec(allocator));
+    }
+    pub fn limits(self: *Self) !std.wasm.Limits {
+        return switch (try self.reader().readByte()) {
+            0 => .{ .min = try self.uleb32(), .max = null },
+            1 => .{ .min = try self.uleb32(), .max = try self.uleb32() },
+            else => return error.InvalidValue,
+        };
     }
     const Op = struct {
         op: IR.Code.Op,
@@ -234,8 +223,11 @@ pub const CodeReader = struct {
             idx: u32,
         };
     };
-    pub fn next(self: *Self) !?Op {
-        if (self.it.pos >= self.it.buffer.len) return null;
+    pub inline fn finished(self: Self) bool {
+        return self.it.pos >= self.it.buffer.len;
+    }
+    pub fn nextOp(self: *Self) !?Op {
+        if (self.finished()) return null;
 
         const byte = try self.reader().readByte();
         const op = byteToEnum(IR.Code.Op, byte) orelse return error.InvalidValue;
