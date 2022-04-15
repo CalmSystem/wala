@@ -12,13 +12,13 @@ pub const Any = union(Type) {
     text: Text,
 
     pub fn read(path: u.Txt, allocator: std.mem.Allocator) !Any {
-        const safepath = try std.fs.realpathAlloc(allocator, path);
+        const stdin = u.strEql("-", path);
+        const safepath = if (stdin) try allocator.dupe(u8, path) else try std.fs.realpathAlloc(allocator, path);
 
-        const file = try std.fs.openFileAbsolute(safepath, .{ .read = true });
+        const file = if (stdin) std.io.getStdIn() else try std.fs.openFileAbsolute(safepath, .{ .read = true });
         defer file.close();
 
-        const size = try file.getEndPos();
-        const bytes = try file.readToEndAlloc(allocator, size);
+        const bytes = try file.readToEndAllocOptions(allocator, 1 << 48, try file.getEndPos(), @alignOf(u8), null);
         _ = try file.read(bytes);
 
         if (std.mem.startsWith(u8, bytes, &std.wasm.magic))
@@ -109,10 +109,7 @@ pub const ErrPoint = struct {
         try writer.print("{/}{}\n{^}", .{ point, self.kind, point });
     }
 };
-pub const ReadResult = union(enum) {
-    ok: []Expr,
-    err: ErrPoint,
-};
+pub const ReadResult = u.Result([]Expr, ErrPoint);
 
 /// Human readable text file position
 pub const Position = struct {

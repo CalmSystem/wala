@@ -52,14 +52,11 @@ pub const ErrData = ?union(enum) {
         }
     }
 };
-const Result = union(enum) {
-    ok: IR.Module,
-    err: struct {
+const Result = u.Result(IR.Module, struct {
         kind: anyerror,
         data: ErrData = null,
         at: ?Expr = null,
-    },
-};
+});
 pub fn tryLoad(exprs: []const Expr, allocator: std.mem.Allocator, loader: anytype) Result {
     //TODO: load recussive with (use ?id name)
     _ = loader.load;

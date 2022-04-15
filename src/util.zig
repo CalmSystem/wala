@@ -25,3 +25,11 @@ pub inline fn constSliceExpand(comptime T: type, allocator: std.mem.Allocator, s
     slice.* = resized;
     return resized[resized.len - n ..];
 }
+
+pub const ResultKind = enum { ok, err };
+pub fn Result(comptime ok: type, comptime err: type) type {
+    return union(ResultKind) {
+        ok: ok,
+        err: err,
+    };
+}
