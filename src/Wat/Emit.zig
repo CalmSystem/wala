@@ -23,7 +23,29 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
         n_arr += @boolToInt(func.type.results.len > 0);
         n_arr += switch (func.body) {
             .import => @as(usize, 1),
-            .code => |code| try sizeCode(code, true),
+            .code => |code| blk: {
+                var n: usize = 0;
+                var reader = Wasm.Reader.init(code.bytes);
+                const nLocals = try reader.uleb32();
+                if (nLocals > 0) {
+                    try reader.it.seekBy(nLocals * 2);
+                    n += 1;
+                }
+                var depth: usize = 1;
+                while (true) {
+                    const inst = try reader.op(&depth);
+                    if (depth == 0) break;
+                    n += 1 + @as(usize, switch (inst.arg) {
+                        .none => 0,
+                        .int, .float, .idx => 1,
+                        .table, .xy => 2,
+                        .memarg => |arg| @as(usize, 1) + @boolToInt(arg.offset != 0),
+                        .blocktype => |b| @boolToInt(b != .empty),
+                    });
+                }
+                if (!reader.finished()) return error.NoFuncEnd;
+                break :blk n;
+            },
         };
 
         var arr = try Arr.init(n_arr, allocator);
@@ -45,7 +67,65 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
             arr.append(try valtypes("result", func.type.results, allocator));
         switch (func.body) {
             .import => {},
-            .code => |code| try emitCode(code, &arr, allocator, true),
+            .code => |code| {
+                //TODO: relocate
+                var reader = Wasm.Reader.init(code.bytes);
+                var nLocals = try reader.uleb32();
+                if (nLocals > 0) {
+                    var lcs = try Arr.init(2, allocator);
+                    lcs.append(try keyword("local", allocator));
+                    while (nLocals > 0) : (nLocals -= 1) {
+                        const n = try reader.uleb32();
+                        const typ = try reader.valtype();
+                        try lcs.inner.appendNTimes(allocator, try keyword(@tagName(typ), allocator), n);
+                    }
+                    arr.append(lcs.finish());
+                }
+                var depth: usize = 1;
+                while (true) {
+                    const inst = try reader.op(&depth);
+                    if (depth == 0) break;
+                    arr.append(try opToKeyword(inst.op, allocator));
+                    switch (inst.arg) {
+                        .none => {},
+                        .int => |i| arr.append(try int(i, allocator)),
+                        .idx => |i| arr.append(try int(i, allocator)),
+                        .float => |f| arr.append(try float(f, allocator)),
+                        .memarg => |arg| {
+                            if (arg.offset != 0)
+                                arr.append(try prefixedInt(arg.offset, "offset=", allocator));
+                            arr.append(try prefixedInt(@as(i64, 1) << @truncate(u6, arg.align_), "align=", allocator));
+                        },
+                        .blocktype => |b| switch (b) {
+                            .empty => {},
+                            .valtype => |v| {
+                                var val = try Arr.init(2, allocator);
+                                val.append(try keyword("result", allocator));
+                                val.append(try keyword(@tagName(v), allocator));
+                                arr.append(val.finish());
+                            },
+                            .idx => |v| {
+                                std.debug.print("{}", .{v});
+                                //FIXME: func types
+                                unreachable;
+                            },
+                        },
+                        .table => |t| {
+                            var lst = try Arr.init(t.n, allocator);
+                            var rd = Wasm.Reader.init(t.buf);
+                            var n: usize = 0;
+                            while (n < t.n): (n += 1)
+                                lst.append(try int(try rd.uleb32(), allocator));
+                            arr.append(lst.finish());
+                            arr.append(try int(try rd.uleb32(), allocator));
+                            std.debug.assert(rd.finished());
+                        },
+                        .xy => |xy| for (xy) |v|
+                            arr.append(try int(v, allocator)),
+                    }
+                }
+                std.debug.assert(reader.finished());
+            },
         }
 
         top.append(arr.finish());
@@ -82,9 +162,7 @@ pub fn emit(m: IR.Module, allocator: std.mem.Allocator, comptime opt: Opt) !Expr
         const content = switch (data.body) {
             .active => |act| blk: {
                 std.debug.assert(act.mem == 0);
-                var offset = try Arr.init(try sizeCode(act.offset, false), allocator);
-                try emitCode(act.offset, &offset, allocator, false);
-                arr.append(offset.finish());
+                arr.append(try constExpr(act.offset, allocator));
                 break :blk act.content;
             },
             .passive => |pas| pas,
@@ -159,27 +237,28 @@ fn prefixedInt(v: i64, comptime prefix: u.Txt, allocator: std.mem.Allocator) !Ex
 fn int(v: i64, allocator: std.mem.Allocator) !Expr {
     return prefixedInt(v, "", allocator);
 }
-
-fn sizeCode(code: IR.Code, hasLocals: bool) !usize {
-    var n: usize = 0;
-    var reader = Wasm.CodeReader.initExpr(code.bytes);
-    if (hasLocals) {
-        const nLocals = try reader.uleb32();
-        if (nLocals > 0) {
-            try reader.it.seekBy(nLocals * 2);
-            n += 1;
-        }
-    }
-    while (try reader.nextOp()) |inst| {
-        n += 1 + @as(usize, switch (inst.arg) {
-            .none => 0,
-            .int, .float, .idx => 1,
-            .memarg => |m| @as(usize, 1) + @boolToInt(m.offset != 0),
-            .blocktype => |b| @boolToInt(b != .empty),
-        });
-    }
-    return n;
+fn float(v: f64, allocator: std.mem.Allocator) !Expr {
+    //FIXME: check for spec compliance
+    var counter = std.io.countingWriter(std.io.null_writer);
+    try std.fmt.formatFloatScientific(v, .{}, counter.writer());
+    const buf = try allocator.alloc(u8, counter.bytes_written);
+    var fixed = std.io.fixedBufferStream(buf);
+    try std.fmt.formatFloatScientific(v, .{}, fixed.writer());
+    return Expr{ .val = .{ .keyword = fixed.getWritten() } };
 }
+fn constExpr(expr: IR.InitExpr, allocator: std.mem.Allocator) !Expr {
+    var arr = try Arr.init(2, allocator);
+    arr.append(try opToKeyword(IR.initExpr(expr), allocator));
+    arr.append(switch (expr) {
+        .i32_const => |i| try int(i, allocator),
+        .i64_const => |i| try int(i, allocator),
+        .f32_const => |f| try float(f, allocator),
+        .f64_const => |f| try float(f, allocator),
+        .global_get => |i| try int(i, allocator),
+    });
+    return arr.finish();
+}
+
 inline fn opToKeyword(op: IR.Code.Op, allocator: std.mem.Allocator) std.mem.Allocator.Error!Expr {
     const tag = @tagName(op);
     if (std.mem.indexOfScalar(u8, tag, '_')) |i| if (!std.mem.startsWith(u8, tag, "br")) {
@@ -190,52 +269,4 @@ inline fn opToKeyword(op: IR.Code.Op, allocator: std.mem.Allocator) std.mem.Allo
         return keyword(slice, allocator);
     };
     return keyword(tag, allocator);
-}
-fn emitCode(code: IR.Code, out: *Arr, allocator: std.mem.Allocator, hasLocals: bool) !void {
-    //TODO: relocate
-    var reader = Wasm.CodeReader.initExpr(code.bytes);
-    if (hasLocals) {
-        var nLocals = try reader.uleb32();
-        if (nLocals > 0) {
-            var arr = try Arr.init(2, allocator);
-            arr.append(try keyword("local", allocator));
-            while (nLocals > 0) : (nLocals -= 1) {
-                const n = try reader.uleb32();
-                const typ = try reader.valtype();
-                try arr.inner.appendNTimes(allocator, try keyword(@tagName(typ), allocator), n);
-            }
-            out.append(arr.finish());
-        }
-    }
-    while (try reader.nextOp()) |inst| {
-        out.append(try opToKeyword(inst.op, allocator));
-        switch (inst.arg) {
-            .none => {},
-            .int => |i| out.append(try int(i, allocator)),
-            .idx => |i| out.append(try int(i, allocator)),
-            .float => {
-                //FIXME: float to string
-                unreachable;
-            },
-            .memarg => |m| {
-                if (m.offset != 0)
-                    out.append(try prefixedInt(m.offset, "offset=", allocator));
-                out.append(try prefixedInt(@as(i64, 1) << @truncate(u6, m.align_), "align=", allocator));
-            },
-            .blocktype => |b| switch (b) {
-                .empty => {},
-                .valtype => |v| {
-                    var arr = try Arr.init(2, allocator);
-                    arr.append(try keyword("result", allocator));
-                    arr.append(try keyword(@tagName(v), allocator));
-                    out.append(arr.finish());
-                },
-                .idx => |v| {
-                    std.debug.print("{}", .{v});
-                    //FIXME: func types
-                    unreachable;
-                },
-            },
-        }
-    }
 }
