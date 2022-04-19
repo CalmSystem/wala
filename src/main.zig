@@ -90,10 +90,11 @@ inline fn parse(options: ParseOptions, positionals: Positionals, help: bool) voi
     switch (file.text.tryRead()) {
         .ok => |exprs| {
             const writer = std.io.getStdOut().writer();
-            for (exprs) |expr| {
+            for (exprs.list()) |expr| {
                 expr.print(options.format, writer) catch unreachable;
                 writer.writeByte('\n') catch unreachable;
             }
+            exprs.deinit();
         },
         .err => |err| fatalErr(err),
     }
@@ -103,9 +104,14 @@ inline fn aLoader() Loader {
     return .{
         .allocator = top_alloc,
         .errAt = struct {
-            fn do(err: Loader.ErrPoint, data: Loader.ErrData) void {
-                errPrint("{}\n", .{err});
-                if (data) |d| errPrint("{}\n", .{d});
+            fn do(arg: Loader.ErrArg) void {
+                switch (arg) {
+                    .text => |a| {
+                        errPrint("{}\n", .{a.point});
+                        if (a.data) |d| errPrint("{}\n", .{d});
+                    },
+                    .wasm => |a| errPrint("{s}@{}: {}\n", .{ a.file.realpath, a.at, a.kind }),
+                }
             }
         }.do,
     };

@@ -7,11 +7,20 @@ const Wasm = @import("Wasm.zig");
 
 allocator: std.mem.Allocator,
 trace: std.ArrayListUnmanaged(u.Txt) = .{},
-errAt: fn (point: ErrPoint, data: ErrData) void,
+errAt: fn (arg: ErrArg) void,
 
 const Self = @This();
-pub const ErrPoint = File.ErrPoint;
-pub const ErrData = Wat.ErrData;
+pub const ErrArg = union(File.Type) {
+    text: struct {
+        point: File.ErrPoint,
+        data: Wat.ErrData = null,
+    },
+    wasm: struct {
+        kind: anyerror,
+        at: usize,
+        file: *const File.Wasm,
+    },
+};
 
 pub fn load(self: *Self, entry: u.Txt) !IR.Module {
     //TODO: cwd from trace
@@ -20,22 +29,27 @@ pub fn load(self: *Self, entry: u.Txt) !IR.Module {
 
     return switch (file) {
         .text => |text| switch (text.tryRead()) {
-            .ok => |exprs| switch (Wat.tryLoad(exprs, self.allocator, self)) {
+            .ok => |exprs| switch (Wat.tryLoad(exprs.list(), self.allocator, self)) {
                 .ok => |m| m,
                 .err => |err| {
                     if (err.at != null and err.at.?.at != null) {
-                        self.errAt(.{ .kind = err.kind, .file = &text, .at = err.at.?.at.?.offset }, err.data);
+                        self.errAt(.{ .text = .{ .point = .{ .kind = err.kind, .file = &text, .at = err.at.?.at.?.offset }, .data = err.data } });
                     }
                     return err.kind;
                 },
             },
             .err => |err| {
-                self.errAt(err, null);
+                self.errAt(.{ .text = .{ .point = err } });
                 return err.kind;
             },
         },
-        .wasm => |wasm| //MAYBE: Wasm.tryLoad and Self.errAtBin
-        try Wasm.load(wasm.bytes, self.allocator),
+        .wasm => |wasm| switch (Wasm.tryLoad(wasm.bytes, self.allocator)) {
+            .ok => |m| m,
+            .err => |err| {
+                self.errAt(.{ .wasm = .{ .kind = err.kind, .file = &wasm, .at = err.at } });
+                return err.kind;
+            },
+        },
     };
 }
 
@@ -44,8 +58,8 @@ pub fn writeWasm(m: IR.Module, writer: anytype) !void {
 }
 pub fn writeText(m: IR.Module, writer: anytype, alloc: std.mem.Allocator, fmt: @import("Expr.zig").Format) !void {
     const wat = try Wat.emit(m, alloc, .{});
-    defer wat.deinit(alloc);
+    defer wat.deinit();
 
-    try wat.print(fmt, writer);
+    try wat.val.print(fmt, writer);
     try writer.writeByte('\n');
 }

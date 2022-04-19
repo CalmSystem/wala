@@ -53,9 +53,9 @@ pub const ErrData = ?union(enum) {
     }
 };
 const Result = u.Result(IR.Module, struct {
-        kind: anyerror,
-        data: ErrData = null,
-        at: ?Expr = null,
+    kind: anyerror,
+    data: ErrData = null,
+    at: ?Expr = null,
 });
 pub fn tryLoad(exprs: []const Expr, allocator: std.mem.Allocator, loader: anytype) Result {
     //TODO: load recussive with (use ?id name)
@@ -333,7 +333,7 @@ fn loadData(ctx: *Ctx, args: []const Expr, id: ?u.Txt) !IR.Data {
             d.body = .{ .active = .{
                 .mem = 0,
                 .content = "",
-                .offset = offset,
+                .offset = try constExpr(offset.bytes),
             } };
             i += 1;
         }
@@ -386,6 +386,13 @@ inline fn indexFindByF(idx: anytype, f: p.Func) !u32 {
     }
 }
 
+fn constExpr(buf: u.Bin) !IR.InitExpr {
+    const Wasm = @import("Wasm.zig");
+    var reader = Wasm.Reader.init(buf);
+    const ret = try reader.constExpr();
+    if (!reader.finished()) return error.NotOp;
+    return ret;
+}
 fn limit(args: []const Expr) !std.wasm.Limits {
     return switch (args.len) {
         0 => error.Empty,

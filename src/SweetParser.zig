@@ -8,13 +8,16 @@ pub const Error = error{
     IndentMismatch,
 } || SParser.Error;
 
-pub fn parseAll(iter: *TextIterator, alloc: std.mem.Allocator) ![]Expr {
-    var exprs = std.ArrayList(Expr).init(alloc);
+pub fn parseAll(iter: *TextIterator, gpa: std.mem.Allocator) !Expr.Root {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
+
+    var exprs = std.ArrayList(Expr).init(arena.allocator());
     while (!iter.eof()) {
-        if (try mayParseTopOne(iter, alloc)) |expr|
+        if (try mayParseTopOne(iter, arena.allocator())) |expr|
             try exprs.append(expr);
     }
-    return exprs.toOwnedSlice();
+    return Expr.Root{ .val = .{ .val = .{ .list = exprs.toOwnedSlice() } }, .arena = arena };
 }
 
 fn notEol(cp: u21) bool {
@@ -49,11 +52,11 @@ fn parseIndent(iter: *TextIterator) []const u8 {
     }
 }
 
-pub fn mayParseTopOne(iter: *TextIterator, alloc: std.mem.Allocator) !?Expr {
+pub fn mayParseTopOne(iter: *TextIterator, arena: std.mem.Allocator) !?Expr {
     if (isIndented(parseIndent(iter)))
         return error.TopLevelIndent;
 
-    if (try mayParseOne(iter, alloc, "")) |ei| {
+    if (try mayParseOne(iter, arena, "")) |ei| {
         if (ei.next_indent.len != 0)
             return error.IndentMismatch;
         return ei.expr;
@@ -97,11 +100,6 @@ fn mayParseOne(iter: *TextIterator, alloc: std.mem.Allocator, my_indent: []const
     return ExprIndent{ .expr = if (exprs.items.len == 0) left else Expr{ .at = .{ .offset = left.at.?.offset, .len = exprs.items[exprs.items.len - 1].at.?.end() - left.at.?.offset }, .val = .{ .list = exprs.toOwnedSlice() } }, .next_indent = next_indent };
 }
 
-inline fn deinitAll(arr: []Expr, allocator: std.mem.Allocator) void {
-    for (arr) |expr|
-        expr.deinit(allocator);
-    allocator.destroy(arr.ptr);
-}
 /// https://github.com/ziglang/zig/issues/4437
 inline fn expectEqual(expected: anytype, actual: anytype) !void {
     return std.testing.expectEqual(@as(@TypeOf(actual), expected), actual);
@@ -110,12 +108,13 @@ test "empty" {
     var iter = TextIterator.unsafeInit("");
     const empty = try parseAll(&iter, std.testing.failing_allocator);
 
-    try expectEqual(0, empty.len);
+    try expectEqual(0, empty.list().len);
 }
 test "skip spaces" {
     var iter = try TextIterator.init("\n() (;b ;) \r\n;; comment\n(  )");
-    const two = try parseAll(&iter, std.testing.allocator);
-    defer deinitAll(two, std.testing.allocator);
+    const root = try parseAll(&iter, std.testing.allocator);
+    defer root.deinit();
+    const two = root.list();
 
     try expectEqual(2, two.len);
     try std.testing.expect(two[1].val == .list);
@@ -129,8 +128,9 @@ test "strings" {
         \\$id
         \\$"still id"
     );
-    const str = try parseAll(&iter, std.testing.allocator);
-    defer deinitAll(str, std.testing.allocator);
+    const root = try parseAll(&iter, std.testing.allocator);
+    defer root.deinit();
+    const str = root.list();
 
     try expectEqual(3, str.len);
     try std.testing.expectEqualStrings("a\n\t\r\\b\'\"cde", str[0].val.string);
@@ -145,8 +145,9 @@ test "infix" {
         \\{b a c}
         \\{a + b + c}
     );
-    const infix = try parseAll(&iter, std.testing.allocator);
-    defer deinitAll(infix, std.testing.allocator);
+    const root = try parseAll(&iter, std.testing.allocator);
+    defer root.deinit();
+    const infix = root.list();
 
     try expectEqual(4, infix.len);
     for (infix) |list| {
@@ -173,8 +174,9 @@ test "neoteric" {
         \\a(b)
         \\a{c b}
     );
-    const neoteric = try parseAll(&iter, std.testing.allocator);
-    defer deinitAll(neoteric, std.testing.allocator);
+    const root = try parseAll(&iter, std.testing.allocator);
+    defer root.deinit();
+    const neoteric = root.list();
 
     try expectEqual(3, neoteric.len);
     for (neoteric) |list| {
@@ -190,8 +192,9 @@ test "neoteric" {
 }
 test "Expr.format" {
     var iter = TextIterator.unsafeInit("a ($b) \"c\" d");
-    const exprs = try parseAll(&iter, std.testing.allocator);
-    defer deinitAll(exprs, std.testing.allocator);
+    const root = try parseAll(&iter, std.testing.allocator);
+    defer root.deinit();
+    const exprs = root.list();
 
     try expectEqual(1, exprs.len);
     try std.testing.expectFmt(
@@ -218,52 +221,40 @@ test "Error.TopLevelIndent" {
     try expectEqual(3, iter.cur.?.offset);
 }
 test "Error.IndentMismatch" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
     var iter = TextIterator.unsafeInit(
         \\top
         \\  (2;;
         \\)
         \\ 1
     );
-    const err = parseAll(&iter, arena.allocator());
+    const err = parseAll(&iter, std.testing.allocator);
 
     try std.testing.expectError(Error.IndentMismatch, err);
     try expectEqual(14, iter.cur.?.offset);
 }
 test "Error.InvalidUtf8 Surrogate" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
     var iter = TextIterator.unsafeInit(
         \\"\u{d842}"
     );
-    const err = parseAll(&iter, arena.allocator());
+    const err = parseAll(&iter, std.testing.allocator);
 
     try std.testing.expectError(Error.InvalidUtf8, err);
     try expectEqual(8, iter.cur.?.offset);
 }
 test "Error.InvalidUtf8 Overflow" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
     var iter = TextIterator.unsafeInit(
         \\"\u{AAAAAAAAAAAAAAAAAAAAAAAAA}"
     );
-    const err = parseAll(&iter, arena.allocator());
+    const err = parseAll(&iter, std.testing.allocator);
 
     try std.testing.expectError(Error.InvalidUtf8, err);
     try expectEqual(9, iter.cur.?.offset);
 }
 test "Error.UnexpectedCharacter" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
     var iter = TextIterator.unsafeInit(
         \\"\error"
     );
-    const err = parseAll(&iter, arena.allocator());
+    const err = parseAll(&iter, std.testing.allocator);
 
     try std.testing.expectError(Error.UnexpectedCharacter, err);
     try expectEqual(3, iter.cur.?.offset);

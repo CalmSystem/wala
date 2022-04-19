@@ -7,10 +7,6 @@ const Expr = @This();
 val: Val,
 at: ?Range = null,
 
-pub fn deinit(e: Expr, allocator: std.mem.Allocator) void {
-    e.val.deinit(allocator);
-}
-
 const Range = struct {
     offset: usize,
     len: usize,
@@ -34,22 +30,23 @@ pub const Format = enum {
     sweet,
 };
 
+pub const Root = struct {
+    val: Expr,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn deinit(self: Root) void {
+        self.arena.deinit();
+    }
+    pub inline fn list(self: Root) []Expr {
+        return self.val.val.list;
+    }
+};
+
 pub const Val = union(enum) {
     list: []Expr,
     keyword: u.Txt,
     string: u.Bin,
     id: u.Txt,
-
-    fn deinit(self: Val, allocator: std.mem.Allocator) void {
-        switch (self) {
-            .list => |exprs| {
-                for (exprs) |expr|
-                    expr.deinit(allocator);
-                allocator.free(exprs);
-            },
-            .keyword, .string, .id => |str| allocator.free(str),
-        }
-    }
 
     fn asText(self: Val) ?u.Txt {
         return switch (self) {
@@ -145,9 +142,7 @@ pub const Val = union(enum) {
             },
             .string => |str| {
                 try writer.writeByte('"');
-                var it = TextIterator{ .bytes = str, .cur = null };
-                while (it.next()) |cp| {
-                    const c = cp.scalar;
+                for (str) |c| { // Cannot assume utf8, so it is ascii or binary...
                     const bytes = switch (c) {
                         '\t' => "\\t",
                         '\n' => "\\n",
@@ -155,7 +150,7 @@ pub const Val = union(enum) {
                         '\"' => "\\\"",
                         '\'' => "\\\'",
                         '\\' => "\\\\",
-                        else => if (c < 128 and std.ascii.isPrint(@truncate(u8, c))) cp.bytes else blk: {
+                        else => if (c < 128 and std.ascii.isPrint(c)) &[_:0]u8{c} else blk: {
                             try writer.print("\\u{{{X}}}", .{c});
                             break :blk "";
                         },

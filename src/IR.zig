@@ -127,62 +127,16 @@ pub const Sigtype = enum {
     }
 };
 
-pub const Func = struct {
-    body: union(enum) {
-        import: ImportName,
-        code: Code,
-    },
-    id: ?u.Txt,
-    exports: []const ExportName = &[_]ExportName{},
-    type: Sig,
-
-    pub const Sig = struct {
-        params: []const Sigtype = &[_]Sigtype{},
-        results: []const Sigtype = &[_]Sigtype{},
+pub const InitExpr = std.wasm.InitExpression;
+pub inline fn initExpr(expr: InitExpr) Code.Op {
+    return switch (expr) {
+        .i32_const => .i32_const,
+        .i64_const => .i64_const,
+        .f32_const => .f32_const,
+        .f64_const => .f64_const,
+        .global_get => .global_get,
     };
-};
-
-pub const Table = struct {
-    body: union(enum) { import: ImportName, intern: void },
-    id: ?u.Txt,
-    exports: []const ExportName = &[_]ExportName{},
-    type: std.wasm.RefType,
-    size: std.wasm.Limits,
-};
-
-pub const Memory = struct {
-    import: ?ImportName = null,
-    id: ?u.Txt,
-    exports: []const ExportName = &[_]ExportName{},
-    size: std.wasm.Limits,
-};
-
-pub const Global = struct {
-    body: union(enum) {
-        import: ImportName,
-        code: Code,
-    },
-    id: ?u.Txt,
-    exports: []const ExportName = &[_]ExportName{},
-    type: Sigtype,
-    mutable: bool,
-};
-
-pub const Elem = struct {
-    //TODO:
-};
-
-pub const Data = struct {
-    body: union(enum) {
-        active: struct {
-            mem: u32,
-            offset: Code,
-            content: u.Bin,
-        },
-        passive: u.Bin,
-    },
-    id: ?u.Txt,
-};
+}
 
 pub const Code = struct {
     bytes: u.Bin,
@@ -195,6 +149,81 @@ pub const Code = struct {
         align_: u32,
         offset: u32 = 0,
     };
+};
+pub const Func = struct {
+    body: union(enum) {
+        import: ImportName,
+        code: Code,
+    },
+    id: ?u.Txt = null,
+    exports: []const ExportName = &[_]ExportName{},
+    type: Sig,
+
+    pub const Sig = struct {
+        params: []const Sigtype = &[_]Sigtype{},
+        results: []const Sigtype = &[_]Sigtype{},
+    };
+};
+
+pub const Table = struct {
+    body: union(enum) { import: ImportName, intern: void },
+    id: ?u.Txt = null,
+    exports: []const ExportName = &[_]ExportName{},
+    type: std.wasm.RefType,
+    size: std.wasm.Limits,
+};
+
+pub const Memory = struct {
+    import: ?ImportName = null,
+    id: ?u.Txt = null,
+    exports: []const ExportName = &[_]ExportName{},
+    size: std.wasm.Limits,
+};
+
+pub const Global = struct {
+    body: union(enum) {
+        import: ImportName,
+        init: InitExpr,
+    },
+    id: ?u.Txt = null,
+    exports: []const ExportName = &[_]ExportName{},
+    type: Sigtype,
+    mutable: bool,
+};
+
+pub const Elem = struct {
+    type: Type,
+    init: union(enum) {
+        val: []const InitExpr,
+        func: []const u32,
+    },
+    mode: Mode,
+
+    pub const Type = enum(u8) {
+        elemkind = 0x00,
+        funcref = 0x70,
+        externref = 0x6F,
+    };
+    const Mode = union(enum) {
+        passive,
+        active: struct {
+            table: u32,
+            offset: InitExpr,
+        },
+        declarative,
+    };
+};
+
+pub const Data = struct {
+    body: union(enum) {
+        active: struct {
+            mem: u32,
+            offset: InitExpr,
+            content: u.Bin,
+        },
+        passive: u.Bin,
+    },
+    id: ?u.Txt = null,
 };
 
 pub const ImportName = struct {
@@ -209,10 +238,7 @@ pub const Section = struct {
     pub const Custom = struct {
         name: u.Txt,
         content: u.Bin,
-        after: union(enum) {
-            common: Type,
-            custom: u.Txt,
-        },
+        after: Type,
         relocs: []const Linking.Reloc.Entry = &[_]Linking.Reloc.Entry{},
     };
 };

@@ -3,13 +3,16 @@ const u = @import("util.zig");
 pub const Expr = @import("Expr.zig");
 pub const TextIterator = @import("TextIterator.zig");
 
-pub fn parseAll(iter: *TextIterator, alloc: std.mem.Allocator) Error![]Expr {
-    var exprs = std.ArrayList(Expr).init(alloc);
+pub fn parseAll(iter: *TextIterator, gpa: std.mem.Allocator) Error!Expr.Root {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
+
+    var exprs = std.ArrayList(Expr).init(arena.allocator());
     while (!iter.eof()) {
-        if (try mayParseOne(iter, alloc)) |expr|
+        if (try mayParseOne(iter, arena.allocator())) |expr|
             try exprs.append(expr);
     }
-    return exprs.toOwnedSlice();
+    return .{ .val = .{ .val = .{ .list = exprs.toOwnedSlice() } }, .arena = arena };
 }
 
 /// Does not skip block comments
@@ -171,24 +174,24 @@ inline fn mayParseOneVal(iter: *TextIterator, alloc: std.mem.Allocator) Error!?E
     }
 }
 
-pub fn mayParseOne(iter: *TextIterator, alloc: std.mem.Allocator) Error!?Expr {
+pub fn mayParseOne(iter: *TextIterator, arena: std.mem.Allocator) Error!?Expr {
     try skipSpaces(iter);
     const at_offset = iter.peek().offset;
 
-    const left = if (try mayParseOneVal(iter, alloc)) |val|
+    const left = if (try mayParseOneVal(iter, arena)) |val|
         Expr{ .at = .{ .offset = at_offset, .len = iter.peek().offset - at_offset }, .val = val }
     else
         return null;
 
     // Partial neoteric-expression
     if (iter.peek().scalar == '{') {
-        const list = try alloc.alloc(Expr, 2);
+        const list = try arena.alloc(Expr, 2);
         list[0] = left;
-        list[1] = (try mayParseOne(iter, alloc)).?; // Always infix list
+        list[1] = (try mayParseOne(iter, arena)).?; // Always infix list
 
         return Expr{ .at = .{ .offset = at_offset, .len = iter.peek().offset - at_offset }, .val = .{ .list = list } };
     } else if (iter.peek().scalar == '(') {
-        var exprs = (try mayParseOneBlock(iter, alloc, false)) orelse return left;
+        var exprs = (try mayParseOneBlock(iter, arena, false)) orelse return left;
         try exprs.insert(0, left);
 
         return Expr{ .at = .{ .offset = at_offset, .len = iter.peek().offset - at_offset }, .val = .{ .list = exprs.toOwnedSlice() } };
@@ -212,7 +215,6 @@ inline fn transformInfix(list: *std.ArrayList(Expr)) void {
 
     i = 3;
     while (i < list.items.len - 1) : (i += 1) {
-        list.items[i].deinit(list.allocator);
         _ = list.orderedRemove(i);
     }
 }

@@ -67,7 +67,7 @@ pub const Text = struct {
     inline fn iter(self: Text) TextIterator {
         return TextIterator.unsafeInit(self.text);
     }
-    inline fn parseAs(comptime sweet: bool) fn (*TextIterator, std.mem.Allocator) SweetParser.Error![]Expr {
+    inline fn parseAs(comptime sweet: bool) fn (*TextIterator, std.mem.Allocator) SweetParser.Error!Expr.Root {
         return if (comptime sweet) SweetParser.parseAll else SParser.parseAll;
     }
 
@@ -109,7 +109,7 @@ pub const ErrPoint = struct {
         try writer.print("{/}{}\n{^}", .{ point, self.kind, point });
     }
 };
-pub const ReadResult = u.Result([]Expr, ErrPoint);
+pub const ReadResult = u.Result(Expr.Root, ErrPoint);
 
 /// Human readable text file position
 pub const Position = struct {
